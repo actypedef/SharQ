@@ -1,0 +1,39 @@
+# Build artifacts
+/build/
+/dist/
+/kernels/build*/
+**/CMakeFiles/
+CMakeCache.txt
+Makefile
+compile_commands.json
+
+# Binary outputs
+*.so
+*.o
+*.a
+*.obj
+*.egg
+
+# Python caches
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+**/.ipynb_checkpoints/
+
+# Local outputs
+/saved/
+/results/
+/output/
+*.log
+log.txt
+*.tar.gz
+*.pt
+
+# Editor files
+.vscode/
+**/.vscode/

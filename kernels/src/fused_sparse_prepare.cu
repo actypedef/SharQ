@@ -1,0 +1,238 @@
+#include "fused_sparse_prepare.h"
+
+#include <cuda_runtime.h>
+
+namespace fused_sparse_prepare {
+
+constexpr int kThreadBlockRows = 32;
+constexpr int kThreadBlockK = 128;
+constexpr int kSparseElementsPerThread = 32;
+constexpr int kResidualElementsPerGroup = 16;
+constexpr int kThreadsPerRowTile = kThreadBlockK / kSparseElementsPerThread;
+constexpr int kThreadsPerBlock = kThreadBlockRows * kThreadsPerRowTile;
+
+constexpr float kFp4Max = 6.0f;
+constexpr float kFp8Max = 448.0f;
+constexpr float kScaleEps = 0.001953125f;
+
+struct PackFp4 {
+  int8_t low : 4;
+  int8_t high : 4;
+};
+
+__device__ __forceinline__ float fp_abs(float x) {
+  return x < 0.0f ? -x : x;
+}
+
+__device__ __forceinline__ float fp_max(float a, float b) {
+  return a > b ? a : b;
+}
+
+__device__ __forceinline__ float fp_min(float a, float b) {
+  return a < b ? a : b;
+}
+
+__device__ __forceinline__ float clamp_val(float x, float lo, float hi) {
+  return fp_max(lo, fp_min(x, hi));
+}
+
+__host__ __device__ __forceinline__ int div_up_int(int x, int y) {
+  return (x + y - 1) / y;
+}
+
+template <typename ScaleTensor>
+__device__ __forceinline__ void store_scale(
+    ScaleTensor scale_tensor,
+    int row_id,
+    int group_id,
+    sf_t scale) {
+  auto logical_coord0 = make_coord(make_coord(row_id % 32, (row_id / 32) % 4), row_id / 128);
+  auto logical_coord1 = make_coord(make_coord(0, group_id % 4), group_id / 4);
+  auto logical_coord2 = make_coord(0, 0);
+  scale_tensor(make_coord(logical_coord0, logical_coord1, logical_coord2)) = scale;
+}
+
+__device__ __forceinline__ void top2_pair_indices_8(
+    const float *vals,
+    int &idx0,
+    int &idx1) {
+  float best0 = -1.0f;
+  float best1 = -1.0f;
+  idx0 = 0;
+  idx1 = 1;
+  #pragma unroll
+  for (int i = 0; i < 4; ++i) {
+    float score = fp_max(fp_abs(vals[2 * i]), fp_abs(vals[2 * i + 1]));
+    if (score > best0) {
+      best1 = best0;
+      idx1 = idx0;
+      best0 = score;
+      idx0 = i;
+    }
+    else if (score > best1) {
+      best1 = score;
+      idx1 = i;
+    }
+  }
+  if (idx1 < idx0) {
+    int tmp = idx0;
+    idx0 = idx1;
+    idx1 = tmp;
+  }
+}
+
+template <typename SparseScaleTensor, typename ResidualScaleTensor>
+__global__ void fused_sparse_residual_x_kernel(
+    const bf16_t *input,
+    uint8_t *q_sparse,
+    SparseScaleTensor sparse_scale_tensor,
+    uint8_t *q_residual,
+    ResidualScaleTensor residual_scale_tensor,
+    int seq_len,
+    int hidden_dim,
+    int dense_row_bytes) {
+  int tid = threadIdx.x;
+  int row_in_tile = tid / kThreadsPerRowTile;
+  int group_in_tile = tid % kThreadsPerRowTile;
+  int row_id = blockIdx.y * kThreadBlockRows + row_in_tile;
+  int group_id = blockIdx.x * kThreadsPerRowTile + group_in_tile;
+  int group_base_k = group_id * kSparseElementsPerThread;
+
+  if (row_id >= seq_len || group_base_k >= hidden_dim) {
+    return;
+  }
+
+  cutlass::NumericConverter<fp4_t, float, cutlass::FloatRoundStyle::round_to_nearest> float_to_fp4;
+  cutlass::NumericConverter<float, fp4_t, cutlass::FloatRoundStyle::round_to_nearest> fp4_to_float;
+  cutlass::NumericConverter<sf_t, float, cutlass::FloatRoundStyle::round_to_nearest> float_to_sf;
+  cutlass::NumericConverter<float, sf_t, cutlass::FloatRoundStyle::round_to_nearest> sf_to_float;
+
+  float x[kSparseElementsPerThread];
+  bool keep[kSparseElementsPerThread];
+  float residual[kSparseElementsPerThread];
+  uint8_t sparse_dense_storage[kSparseElementsPerThread];
+  uint8_t residual_packed[kSparseElementsPerThread / 2];
+
+  const bf16_t *row_ptr = input + static_cast<size_t>(row_id) * hidden_dim + group_base_k;
+
+  #pragma unroll
+  for (int i = 0; i < kSparseElementsPerThread; ++i) {
+    x[i] = static_cast<float>(row_ptr[i]);
+    keep[i] = false;
+    residual[i] = x[i];
+    sparse_dense_storage[i] = 0;
+  }
+
+  float sparse_max = 0.0f;
+  #pragma unroll
+  for (int chunk = 0; chunk < kSparseElementsPerThread / 8; ++chunk) {
+    int base = chunk * 8;
+    int idx0 = 0;
+    int idx1 = 1;
+    top2_pair_indices_8(x + base, idx0, idx1);
+    int pair0_base = base + 2 * idx0;
+    int pair1_base = base + 2 * idx1;
+    keep[pair0_base + 0] = true;
+    keep[pair0_base + 1] = true;
+    keep[pair1_base + 0] = true;
+    keep[pair1_base + 1] = true;
+    sparse_max = fp_max(sparse_max, fp_abs(x[pair0_base + 0]));
+    sparse_max = fp_max(sparse_max, fp_abs(x[pair0_base + 1]));
+    sparse_max = fp_max(sparse_max, fp_abs(x[pair1_base + 0]));
+    sparse_max = fp_max(sparse_max, fp_abs(x[pair1_base + 1]));
+  }
+
+  float sparse_scale_f = clamp_val(sparse_max / kFp4Max, kScaleEps, kFp8Max);
+  sf_t sparse_scale = float_to_sf(sparse_scale_f);
+  float sparse_scale_quant = sf_to_float(sparse_scale);
+  float sparse_rscale = 1.0f / sparse_scale_quant;
+
+  #pragma unroll
+  for (int i = 0; i < kSparseElementsPerThread; ++i) {
+    if (!keep[i]) {
+      continue;
+    }
+    float q = clamp_val(x[i] * sparse_rscale, -kFp4Max, kFp4Max);
+    fp4_t q_fp4 = float_to_fp4(q);
+    sparse_dense_storage[i] = static_cast<uint8_t>(q_fp4.storage & 0xF);
+    residual[i] = x[i] - fp4_to_float(q_fp4) * sparse_scale_quant;
+  }
+
+  PackFp4 *residual_pack = reinterpret_cast<PackFp4 *>(residual_packed);
+  sf_t residual_scales[2];
+
+  #pragma unroll
+  for (int group16 = 0; group16 < 2; ++group16) {
+    int base16 = group16 * kResidualElementsPerGroup;
+    float residual_max = 0.0f;
+    #pragma unroll
+    for (int i = 0; i < kResidualElementsPerGroup; ++i) {
+      residual_max = fp_max(residual_max, fp_abs(residual[base16 + i]));
+    }
+
+    float residual_scale_f = clamp_val(residual_max / kFp4Max, kScaleEps, kFp8Max);
+    residual_scales[group16] = float_to_sf(residual_scale_f);
+    float residual_scale_quant = sf_to_float(residual_scales[group16]);
+    float residual_rscale = 1.0f / residual_scale_quant;
+
+    #pragma unroll
+    for (int i = 0; i < kResidualElementsPerGroup; i += 2) {
+      float q0 = clamp_val(residual[base16 + i + 0] * residual_rscale, -kFp4Max, kFp4Max);
+      float q1 = clamp_val(residual[base16 + i + 1] * residual_rscale, -kFp4Max, kFp4Max);
+      fp4_t fp4_0 = float_to_fp4(q0);
+      fp4_t fp4_1 = float_to_fp4(q1);
+      residual_pack[(base16 + i) / 2].low = static_cast<int8_t>(fp4_0.storage & 0xF);
+      residual_pack[(base16 + i) / 2].high = static_cast<int8_t>(fp4_1.storage & 0xF);
+    }
+  }
+
+  store_scale(sparse_scale_tensor, row_id, group_id, sparse_scale);
+  store_scale(residual_scale_tensor, row_id, 2 * group_id, residual_scales[0]);
+  store_scale(residual_scale_tensor, row_id, 2 * group_id + 1, residual_scales[1]);
+
+  uint8_t *q_sparse_ptr = q_sparse + static_cast<size_t>(row_id) * dense_row_bytes + group_id * (kSparseElementsPerThread / 2);
+  uint8_t *q_res_ptr = q_residual + static_cast<size_t>(row_id) * dense_row_bytes + group_id * (kSparseElementsPerThread / 2);
+  #pragma unroll
+  for (int i = 0; i < kSparseElementsPerThread / 2; ++i) {
+    q_sparse_ptr[i] = sparse_dense_storage[2 * i] |
+                      static_cast<uint8_t>(sparse_dense_storage[2 * i + 1] << 4);
+  }
+  #pragma unroll
+  for (int i = 0; i < kSparseElementsPerThread / 2; ++i) {
+    q_res_ptr[i] = residual_packed[i];
+  }
+}
+
+}  // namespace fused_sparse_prepare
+
+void run_fused_sparse_residual_x_bf16_nvfp4(
+    bf16_t *hidden_states,
+    int seq_len,
+    int out_features,
+    int hidden_dim,
+    uint8_t *q_sparse,
+    sf_t *sf_sparse,
+    uint8_t *q_residual,
+    sf_t *sf_residual) {
+  int dense_row_bytes = hidden_dim / 2;
+
+  dim3 grid(
+      fused_sparse_prepare::div_up_int(hidden_dim, fused_sparse_prepare::kThreadBlockK),
+      fused_sparse_prepare::div_up_int(seq_len, fused_sparse_prepare::kThreadBlockRows));
+  dim3 block(fused_sparse_prepare::kThreadsPerBlock);
+
+  auto sparse_scale_tensor =
+      cute::make_tensor(sf_sparse, filter_zeros(sparse_nvfp4::get_layoutSFA(seq_len, out_features, hidden_dim)));
+  auto residual_scale_tensor =
+      cute::make_tensor(sf_residual, filter_zeros(nvfp4::get_layoutSFA(seq_len, hidden_dim)));
+
+  fused_sparse_prepare::fused_sparse_residual_x_kernel<<<grid, block>>>(
+      hidden_states,
+      q_sparse,
+      sparse_scale_tensor,
+      q_residual,
+      residual_scale_tensor,
+      seq_len,
+      hidden_dim,
+      dense_row_bytes);
+}
