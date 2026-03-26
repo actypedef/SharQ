@@ -46,6 +46,5 @@ python model/main.py /path/to/model \
 ## Notes
 
 - Python-side loaders prefer the repo-local `kernels/build_cmake_sm120a/sharq_ops.so`.
-- The loader also accepts an older `agemm.so` for backward compatibility.
-- `SHARQ` is the official name of the fused sparse-residual path. `NVFP4_FUSED` remains a legacy alias.
+- `SHARQ` is the fused sparse-residual kernel path used by this repo.
 - `SHARQ_SIM` is the pure PyTorch simulation path and can be used as an accuracy-only reference without building the CUDA extension.

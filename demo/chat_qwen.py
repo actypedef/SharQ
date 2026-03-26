@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--quant-type",
         type=str,
         default="SHARQ",
-        choices=["NVFP4", "NVFP4_FUSED", "SHARQ", "SHARQ_SIM", "NVFP4_SIM"],
+        choices=["NVFP4", "SHARQ", "SHARQ_SIM"],
         help="Quantization path to use.",
     )
     parser.add_argument("--device", type=str, default="cuda:0", help="CUDA device used for quantization and generation.")

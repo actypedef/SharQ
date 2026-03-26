@@ -6,14 +6,11 @@ from pathlib import Path
 import torch
 
 
-def load_agemm():
+def load_sharq_ops():
     repo_root = Path(__file__).resolve().parents[2]
     build_dir = repo_root / "kernels" / "build_cmake_sm120a"
     sys.path.insert(0, str(build_dir))
-    try:
-        import sharq_ops as backend  # type: ignore
-    except ImportError:
-        import agemm as backend  # type: ignore
+    import sharq_ops as backend  # type: ignore
 
     return backend
 
@@ -37,7 +34,7 @@ def main():
     torch.cuda.manual_seed_all(0)
 
     device = torch.device("cuda")
-    agemm = load_agemm()
+    backend = load_sharq_ops()
 
     m = 256
     n = 5120
@@ -47,13 +44,13 @@ def main():
     w = torch.randn((n, k), device=device, dtype=torch.bfloat16) * 0.1
     reorder_index = torch.arange(k, device=device, dtype=torch.int16)
 
-    qx, sfx = agemm.reorder_quantize_x(x, reorder_index, 0)
-    qw16, sfw16 = agemm.reorder_quantize_w(w, reorder_index, 0)
-    qw32, _sfw_sparse32, sfw16_dup = agemm.quantize_w32_shared(w)
+    qx, sfx = backend.reorder_quantize_x(x, reorder_index, 0)
+    qw16, sfw16 = backend.reorder_quantize_w(w, reorder_index, 0)
+    qw32, _sfw_sparse32, sfw16_dup = backend.quantize_w32_shared(w)
 
     y_ref = torch.matmul(x.float(), w.float().t())
-    y_w16 = agemm.matmul(qx, qw16, sfx, sfw16, 1.0)
-    y_w32_shared = agemm.matmul(qx, qw32, sfx, sfw16_dup, 1.0)
+    y_w16 = backend.matmul(qx, qw16, sfx, sfw16, 1.0)
+    y_w32_shared = backend.matmul(qx, qw32, sfx, sfw16_dup, 1.0)
 
     print(f"problem: M={m}, N={n}, K={k}")
     print()

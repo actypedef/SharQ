@@ -18,14 +18,14 @@ def _load_sharq_ops():
         build_dir_str = str(build_dir)
         if build_dir_str not in sys.path:
             sys.path.append(build_dir_str)
-        for module_name in ("sharq_ops", "agemm"):
+        for module_name in ("sharq_ops",):
             try:
                 module = __import__(module_name)
                 _SHARQ_OPS = module
                 return _SHARQ_OPS
             except ImportError:
                 continue
-    raise ImportError("Failed to import sharq_ops or agemm from kernels/build_cmake_sm120a or kernels/build")
+    raise ImportError("Failed to import sharq_ops from kernels/build_cmake_sm120a or kernels/build")
 
 
 def _global_nvfp4_scale(x: torch.Tensor) -> torch.Tensor:
@@ -154,14 +154,14 @@ class QLinearLayer(nn.Module):
     ):
         super().__init__()
 
-        if quant_type not in {"NVFP4", "NVFP4_FUSED", "SHARQ", "SHARQ_SIM", "NVFP4_SIM"}:
+        if quant_type not in {"NVFP4", "SHARQ", "SHARQ_SIM"}:
             raise ValueError(f"Unsupported quant_type: {quant_type}")
 
         self.in_features = original_layer.in_features
         self.out_features = original_layer.out_features
-        if quant_type in {"SHARQ", "NVFP4_FUSED"}:
+        if quant_type == "SHARQ":
             self.quant_type = "SHARQ"
-        elif quant_type in {"SHARQ_SIM", "NVFP4_SIM"}:
+        elif quant_type == "SHARQ_SIM":
             self.quant_type = "SHARQ_SIM"
         else:
             self.quant_type = quant_type

@@ -255,8 +255,9 @@ fused_sparse_residual_quantize_x(const torch::Tensor &X, const int N) {
               K);
 
   auto options = torch::dtype(torch::kUInt8).device(X.device());
-  auto Q_sparse = torch::zeros({static_cast<int64_t>(M), static_cast<int64_t>(K / 2)}, options);
-  auto SFA_sparse = torch::zeros({static_cast<int64_t>(get_sfa_buffer_size_in_bytes(M, K))}, options);
+  auto A_comp = torch::zeros({static_cast<int64_t>(sparse_nvfp4::get_compressed_a_bytes(M, N, K))}, options);
+  auto E = torch::zeros({static_cast<int64_t>(sparse_nvfp4::get_metadata_e_bytes(M, N, K))}, options);
+  auto SFA_sparse = torch::zeros({static_cast<int64_t>(sparse_nvfp4::get_sfa_bytes(M, N, K))}, options);
   auto Q_res = torch::zeros({static_cast<int64_t>(M), static_cast<int64_t>(K / 2)}, options);
   auto SF_res = torch::zeros({static_cast<int64_t>(get_sfa_buffer_size_in_bytes(M, K))}, options);
 
@@ -265,12 +266,13 @@ fused_sparse_residual_quantize_x(const torch::Tensor &X, const int N) {
       M,
       N,
       K,
-      Q_sparse.data_ptr<uint8_t>(),
+      A_comp.data_ptr<uint8_t>(),
+      E.data_ptr<uint8_t>(),
+      nullptr,
       reinterpret_cast<cutlass::float_ue4m3_t *>(SFA_sparse.data_ptr<uint8_t>()),
       Q_res.data_ptr<uint8_t>(),
       reinterpret_cast<cutlass::float_ue4m3_t *>(SF_res.data_ptr<uint8_t>()));
 
-  auto [A_comp, E] = compress_sparse_a(Q_sparse, N);
   return std::make_tuple(A_comp, E, SFA_sparse, Q_res, SF_res);
 }
 
@@ -299,6 +301,8 @@ fused_sparse_residual_quantize_x_debug(const torch::Tensor &X, const int N) {
       M,
       N,
       K,
+      nullptr,
+      nullptr,
       Q_sparse.data_ptr<uint8_t>(),
       reinterpret_cast<cutlass::float_ue4m3_t *>(SFA_sparse.data_ptr<uint8_t>()),
       Q_res.data_ptr<uint8_t>(),
@@ -501,3 +505,4 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 #undef CASE_REORDER_W_16
 #undef CASE_REORDER_W_32
 #undef CASE_DOWN_W_32
+

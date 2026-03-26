@@ -6,14 +6,11 @@ from pathlib import Path
 import torch
 
 
-def load_agemm():
+def load_sharq_ops():
     repo_root = Path(__file__).resolve().parents[2]
     build_dir = repo_root / "kernels" / "build_cmake_sm120a"
     sys.path.insert(0, str(build_dir))
-    try:
-        import sharq_ops as backend  # type: ignore
-    except ImportError:
-        import agemm as backend  # type: ignore
+    import sharq_ops as backend  # type: ignore
 
     return backend
 
@@ -51,7 +48,7 @@ def main():
         raise RuntimeError("CUDA is required")
 
     device = torch.device("cuda")
-    agemm = load_agemm()
+    backend = load_sharq_ops()
 
     m = 256
     n = 5120
@@ -59,7 +56,7 @@ def main():
     seed = 0
 
     x = make_outlier_rich_input(m, k, seed, device)
-    q_sparse, sfa_sparse, q_res, sf_res = agemm.fused_sparse_residual_quantize_x_debug(x, n)
+    q_sparse, sfa_sparse, q_res, sf_res = backend.fused_sparse_residual_quantize_x_debug(x, n)
     violation_rate, hist = raw_fp4_chunk_violation_stats(q_sparse)
 
     print(f"problem: M={m}, N={n}, K={k}, seed={seed}")

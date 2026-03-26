@@ -33,7 +33,7 @@ kernels/build_cmake_sm120a/sharq_ops.so
 ## Notes
 
 - The real SharQ kernel path requires Blackwell `sm_120a`.
-- Python-side loaders prefer `sharq_ops.so` and still fall back to an older `agemm.so` if one exists.
+- Python-side code loads `sharq_ops.so` from `kernels/build_cmake_sm120a/`.
 - `SHARQ_SIM` does not use this extension; it is a pure PyTorch reference mode.
 
 ## Low-Level Benchmarks

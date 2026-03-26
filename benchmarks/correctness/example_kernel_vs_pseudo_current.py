@@ -8,14 +8,11 @@ import torch
 import torch.nn.functional as F
 
 
-def load_agemm():
+def load_sharq_ops():
     repo_root = Path(__file__).resolve().parents[2]
     build_dir = repo_root / "kernels" / "build_cmake_sm120a"
     sys.path.insert(0, str(build_dir))
-    try:
-        import sharq_ops as backend  # type: ignore
-    except ImportError:
-        import agemm as backend  # type: ignore
+    import sharq_ops as backend  # type: ignore
 
     return backend
 
@@ -128,7 +125,7 @@ def main() -> None:
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
-    agemm = load_agemm()
+    backend = load_sharq_ops()
 
     if args.case == "outlier_rich":
         x = make_outlier_rich_x(args.m, args.k, device)
@@ -160,12 +157,12 @@ def main() -> None:
     y_pseudo = (y_pseudo_sparse + y_pseudo_res) * output_scale
 
     # Kernel path
-    qw32, sfw_sparse32, sfw_dense16 = agemm.quantize_w32_shared(w_scaled)
-    a_comp, e, sfa_sparse, q_res, sf_res = agemm.fused_sparse_residual_quantize_x(x_scaled, args.n)
-    y_kernel_sparse = agemm.sparse_matmul(
+    qw32, sfw_sparse32, sfw_dense16 = backend.quantize_w32_shared(w_scaled)
+    a_comp, e, sfa_sparse, q_res, sf_res = backend.fused_sparse_residual_quantize_x(x_scaled, args.n)
+    y_kernel_sparse = backend.sparse_matmul(
         a_comp, qw32, e, sfa_sparse, sfw_sparse32, args.m, args.n, args.k, output_scale
     ).float()
-    y_kernel_res = agemm.matmul(
+    y_kernel_res = backend.matmul(
         q_res, qw32, sf_res, sfw_dense16, output_scale
     ).float()
     y_kernel = y_kernel_sparse + y_kernel_res

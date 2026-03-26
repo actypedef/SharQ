@@ -6,14 +6,11 @@ from pathlib import Path
 import torch
 
 
-def load_agemm():
+def load_sharq_ops():
     repo_root = Path(__file__).resolve().parents[2]
     build_dir = repo_root / "kernels" / "build_cmake_sm120a"
     sys.path.insert(0, str(build_dir))
-    try:
-        import sharq_ops as backend  # type: ignore
-    except ImportError:
-        import agemm as backend  # type: ignore
+    import sharq_ops as backend  # type: ignore
 
     return backend
 
@@ -46,7 +43,7 @@ def main():
 
     torch.manual_seed(0)
     torch.cuda.manual_seed_all(0)
-    agemm = load_agemm()
+    backend = load_sharq_ops()
     device = torch.device("cuda")
 
     n = 5120
@@ -55,25 +52,25 @@ def main():
 
     w = torch.randn((n, k), device=device, dtype=torch.bfloat16)
     reorder_index = torch.arange(k, device=device, dtype=torch.int16)
-    qw, sfw = agemm.reorder_quantize_w(w, reorder_index, 0)
+    qw, sfw = backend.reorder_quantize_w(w, reorder_index, 0)
 
     print(f"{'M':>6} {'warmup':>8} {'iters':>8} {'sparse(ms)':>12} {'dense(ms)':>11} {'speedup':>9}")
 
     for m in ms:
         x = make_structured_sparse_input(m, k, device)
-        qx, sfx = agemm.reorder_quantize_x(x, reorder_index, 0)
-        a_comp, e = agemm.compress_sparse_a(qx, n)
+        qx, sfx = backend.reorder_quantize_x(x, reorder_index, 0)
+        a_comp, e = backend.compress_sparse_a(qx, n)
 
         warmup = 100
         iters = 1000
 
         sparse_ms = benchmark_cuda(
-            lambda: agemm.sparse_matmul(a_comp, qw, e, sfx, sfw, m, n, k),
+            lambda: backend.sparse_matmul(a_comp, qw, e, sfx, sfw, m, n, k),
             warmup=warmup,
             iters=iters,
         )
         dense_ms = benchmark_cuda(
-            lambda: agemm.matmul(qx, qw, sfx, sfw, 1.0),
+            lambda: backend.matmul(qx, qw, sfx, sfw, 1.0),
             warmup=warmup,
             iters=iters,
         )

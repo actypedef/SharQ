@@ -10,6 +10,10 @@ constexpr int kSparseElementsPerThread = 32;
 constexpr int kResidualElementsPerGroup = 16;
 constexpr int kThreadsPerRowTile = kThreadBlockK / kSparseElementsPerThread;
 constexpr int kThreadsPerBlock = kThreadBlockRows * kThreadsPerRowTile;
+constexpr int kCompressedSparseBytesPerThread = kSparseElementsPerThread / 4;
+constexpr int kMetadataBytesPerThread = kSparseElementsPerThread / 16;
+constexpr int kMetadataGroupsPerTile = 8;
+constexpr int kMetadataTileRowBytes = 16;
 
 constexpr float kFp4Max = 6.0f;
 constexpr float kFp8Max = 448.0f;
@@ -84,13 +88,17 @@ __device__ __forceinline__ void top2_pair_indices_8(
 template <typename SparseScaleTensor, typename ResidualScaleTensor>
 __global__ void fused_sparse_residual_x_kernel(
     const bf16_t *input,
-    uint8_t *q_sparse,
+    uint8_t *a_comp,
+    uint8_t *e,
+    uint8_t *q_sparse_dense,
     SparseScaleTensor sparse_scale_tensor,
     uint8_t *q_residual,
     ResidualScaleTensor residual_scale_tensor,
     int seq_len,
     int hidden_dim,
-    int dense_row_bytes) {
+    int dense_row_bytes,
+    int compressed_row_bytes,
+    int aligned_seq_len) {
   int tid = threadIdx.x;
   int row_in_tile = tid / kThreadsPerRowTile;
   int group_in_tile = tid % kThreadsPerRowTile;
@@ -110,8 +118,10 @@ __global__ void fused_sparse_residual_x_kernel(
   float x[kSparseElementsPerThread];
   bool keep[kSparseElementsPerThread];
   float residual[kSparseElementsPerThread];
-  uint8_t sparse_dense_storage[kSparseElementsPerThread];
+  uint8_t sparse_nibbles[kSparseElementsPerThread];
   uint8_t residual_packed[kSparseElementsPerThread / 2];
+  int selected_pair_idx0[kSparseElementsPerThread / 8];
+  int selected_pair_idx1[kSparseElementsPerThread / 8];
 
   const bf16_t *row_ptr = input + static_cast<size_t>(row_id) * hidden_dim + group_base_k;
 
@@ -120,7 +130,7 @@ __global__ void fused_sparse_residual_x_kernel(
     x[i] = static_cast<float>(row_ptr[i]);
     keep[i] = false;
     residual[i] = x[i];
-    sparse_dense_storage[i] = 0;
+    sparse_nibbles[i] = 0;
   }
 
   float sparse_max = 0.0f;
@@ -130,6 +140,8 @@ __global__ void fused_sparse_residual_x_kernel(
     int idx0 = 0;
     int idx1 = 1;
     top2_pair_indices_8(x + base, idx0, idx1);
+    selected_pair_idx0[chunk] = idx0;
+    selected_pair_idx1[chunk] = idx1;
     int pair0_base = base + 2 * idx0;
     int pair1_base = base + 2 * idx1;
     keep[pair0_base + 0] = true;
@@ -154,7 +166,7 @@ __global__ void fused_sparse_residual_x_kernel(
     }
     float q = clamp_val(x[i] * sparse_rscale, -kFp4Max, kFp4Max);
     fp4_t q_fp4 = float_to_fp4(q);
-    sparse_dense_storage[i] = static_cast<uint8_t>(q_fp4.storage & 0xF);
+    sparse_nibbles[i] = static_cast<uint8_t>(q_fp4.storage & 0xF);
     residual[i] = x[i] - fp4_to_float(q_fp4) * sparse_scale_quant;
   }
 
@@ -190,13 +202,48 @@ __global__ void fused_sparse_residual_x_kernel(
   store_scale(residual_scale_tensor, row_id, 2 * group_id, residual_scales[0]);
   store_scale(residual_scale_tensor, row_id, 2 * group_id + 1, residual_scales[1]);
 
-  uint8_t *q_sparse_ptr = q_sparse + static_cast<size_t>(row_id) * dense_row_bytes + group_id * (kSparseElementsPerThread / 2);
-  uint8_t *q_res_ptr = q_residual + static_cast<size_t>(row_id) * dense_row_bytes + group_id * (kSparseElementsPerThread / 2);
-  #pragma unroll
-  for (int i = 0; i < kSparseElementsPerThread / 2; ++i) {
-    q_sparse_ptr[i] = sparse_dense_storage[2 * i] |
-                      static_cast<uint8_t>(sparse_dense_storage[2 * i + 1] << 4);
+  if (q_sparse_dense != nullptr) {
+    uint8_t *q_sparse_ptr = q_sparse_dense + static_cast<size_t>(row_id) * dense_row_bytes +
+                            group_id * (kSparseElementsPerThread / 2);
+    #pragma unroll
+    for (int i = 0; i < kSparseElementsPerThread / 2; ++i) {
+      q_sparse_ptr[i] = sparse_nibbles[2 * i] |
+                        static_cast<uint8_t>(sparse_nibbles[2 * i + 1] << 4);
+    }
   }
+
+  if (a_comp != nullptr && e != nullptr) {
+    uint8_t *a_comp_ptr = a_comp + static_cast<size_t>(row_id) * compressed_row_bytes +
+                          group_id * kCompressedSparseBytesPerThread;
+    int metadata_tile_k = group_id / kMetadataGroupsPerTile;
+    int metadata_group_in_tile = group_id % kMetadataGroupsPerTile;
+    uint8_t *e_ptr = e + static_cast<size_t>(metadata_tile_k) * aligned_seq_len * kMetadataTileRowBytes +
+                     static_cast<size_t>(row_id) * kMetadataTileRowBytes +
+                     metadata_group_in_tile * kMetadataBytesPerThread;
+    uint8_t metadata_nibbles[kSparseElementsPerThread / 8];
+
+    #pragma unroll
+    for (int chunk = 0; chunk < kSparseElementsPerThread / 8; ++chunk) {
+      int base = chunk * 8;
+      uint8_t dense_bytes[4];
+      #pragma unroll
+      for (int pair = 0; pair < 4; ++pair) {
+        dense_bytes[pair] = sparse_nibbles[base + 2 * pair] |
+                            static_cast<uint8_t>(sparse_nibbles[base + 2 * pair + 1] << 4);
+      }
+      int idx0 = selected_pair_idx0[chunk];
+      int idx1 = selected_pair_idx1[chunk];
+      a_comp_ptr[2 * chunk + 0] = dense_bytes[idx0];
+      a_comp_ptr[2 * chunk + 1] = dense_bytes[idx1];
+      metadata_nibbles[chunk] = static_cast<uint8_t>(idx0 | (idx1 << 2));
+    }
+
+    e_ptr[0] = static_cast<uint8_t>(metadata_nibbles[0] | (metadata_nibbles[1] << 4));
+    e_ptr[1] = static_cast<uint8_t>(metadata_nibbles[2] | (metadata_nibbles[3] << 4));
+  }
+
+  uint8_t *q_res_ptr = q_residual + static_cast<size_t>(row_id) * dense_row_bytes +
+                       group_id * (kSparseElementsPerThread / 2);
   #pragma unroll
   for (int i = 0; i < kSparseElementsPerThread / 2; ++i) {
     q_res_ptr[i] = residual_packed[i];
@@ -210,11 +257,15 @@ void run_fused_sparse_residual_x_bf16_nvfp4(
     int seq_len,
     int out_features,
     int hidden_dim,
-    uint8_t *q_sparse,
+    uint8_t *a_comp,
+    uint8_t *e,
+    uint8_t *q_sparse_dense,
     sf_t *sf_sparse,
     uint8_t *q_residual,
     sf_t *sf_residual) {
   int dense_row_bytes = hidden_dim / 2;
+  int compressed_row_bytes = hidden_dim / 4;
+  int aligned_seq_len = fused_sparse_prepare::div_up_int(seq_len, 128) * 128;
 
   dim3 grid(
       fused_sparse_prepare::div_up_int(hidden_dim, fused_sparse_prepare::kThreadBlockK),
@@ -228,11 +279,16 @@ void run_fused_sparse_residual_x_bf16_nvfp4(
 
   fused_sparse_prepare::fused_sparse_residual_x_kernel<<<grid, block>>>(
       hidden_states,
-      q_sparse,
+      a_comp,
+      e,
+      q_sparse_dense,
       sparse_scale_tensor,
       q_residual,
       residual_scale_tensor,
       seq_len,
       hidden_dim,
-      dense_row_bytes);
+      dense_row_bytes,
+      compressed_row_bytes,
+      aligned_seq_len);
 }
+

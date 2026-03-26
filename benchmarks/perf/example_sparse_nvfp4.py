@@ -7,14 +7,11 @@ from pathlib import Path
 import torch
 
 
-def load_agemm():
+def load_sharq_ops():
     repo_root = Path(__file__).resolve().parents[2]
     build_dir = repo_root / "kernels" / "build_cmake_sm120a"
     sys.path.insert(0, str(build_dir))
-    try:
-        import sharq_ops as backend  # type: ignore
-    except ImportError:
-        import agemm as backend  # type: ignore
+    import sharq_ops as backend  # type: ignore
 
     return backend
 
@@ -44,7 +41,7 @@ def main():
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required")
 
-    agemm = load_agemm()
+    backend = load_sharq_ops()
     device = torch.device("cuda")
     torch.manual_seed(0)
     torch.cuda.manual_seed_all(0)
@@ -54,21 +51,21 @@ def main():
     w = torch.randn((n, k), device=device, dtype=torch.bfloat16)
     reorder_index = torch.arange(k, device=device, dtype=torch.int16)
 
-    qx, sfx = agemm.reorder_quantize_x(x, reorder_index, 0)
-    qw, sfw = agemm.reorder_quantize_w(w, reorder_index, 0)
-    a_comp, e = agemm.compress_sparse_a(qx, n)
+    qx, sfx = backend.reorder_quantize_x(x, reorder_index, 0)
+    qw, sfw = backend.reorder_quantize_w(w, reorder_index, 0)
+    a_comp, e = backend.compress_sparse_a(qx, n)
 
     out_sparse, sparse_ms = benchmark(
-        lambda: agemm.sparse_matmul(a_comp, qw, e, sfx, sfw, m, n, k)
+        lambda: backend.sparse_matmul(a_comp, qw, e, sfx, sfw, m, n, k)
     )
     out_dense, dense_ms = benchmark(
-        lambda: agemm.matmul(qx, qw, sfx, sfw, 1.0)
+        lambda: backend.matmul(qx, qw, sfx, sfw, 1.0)
     )
 
     checksum = out_sparse.flatten()[:16].float().sum().item()
     max_diff = (out_sparse.float() - out_dense.float()).abs().max().item()
 
-    a_comp_bytes, e_bytes, sfa_bytes, sfb_bytes = agemm.get_sparse_nvfp4_buffer_sizes(m, n, k)
+    a_comp_bytes, e_bytes, sfa_bytes, sfb_bytes = backend.get_sparse_nvfp4_buffer_sizes(m, n, k)
 
     print(f"problem: M={m}, N={n}, K={k}")
     print(

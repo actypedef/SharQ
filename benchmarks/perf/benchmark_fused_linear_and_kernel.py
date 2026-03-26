@@ -10,13 +10,10 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def load_agemm():
+def load_sharq_ops():
     build_dir = REPO_ROOT / "kernels" / "build_cmake_sm120a"
     sys.path.insert(0, str(build_dir))
-    try:
-        import sharq_ops as backend  # type: ignore
-    except ImportError:
-        import agemm as backend  # type: ignore
+    import sharq_ops as backend  # type: ignore
 
     return backend
 
@@ -43,14 +40,14 @@ def bench_cuda(fn, warmup: int, iters: int) -> float:
     return start.elapsed_time(end) / iters
 
 
-def kernel_dense_prepare(x: torch.Tensor, reorder_index: torch.Tensor, agemm) -> None:
+def kernel_dense_prepare(x: torch.Tensor, reorder_index: torch.Tensor, backend) -> None:
     scale = torch.clamp(x.abs().max().float() / (448.0 * 6.0), min=1e-9)
-    agemm.reorder_quantize_x((x / scale).contiguous(), reorder_index, 0)
+    backend.reorder_quantize_x((x / scale).contiguous(), reorder_index, 0)
 
 
-def kernel_fused_prepare(x: torch.Tensor, out_features: int, agemm) -> None:
+def kernel_fused_prepare(x: torch.Tensor, out_features: int, backend) -> None:
     scale = torch.clamp(x.abs().max().float() / (448.0 * 6.0), min=1e-9)
-    agemm.fused_sparse_residual_quantize_x((x / scale).contiguous(), out_features)
+    backend.fused_sparse_residual_quantize_x((x / scale).contiguous(), out_features)
 
 
 def main() -> None:
@@ -70,7 +67,7 @@ def main() -> None:
     torch.cuda.manual_seed_all(args.seed)
 
     device = torch.device("cuda")
-    agemm = load_agemm()
+    backend = load_sharq_ops()
     QLinearLayer = load_qlinear()
 
     x2d = torch.randn((args.m, args.k), device=device, dtype=torch.bfloat16)
@@ -86,8 +83,8 @@ def main() -> None:
     qlinear_dense = QLinearLayer(layer, select_num=0, reorder_index=reorder_index_cpu, quant_type="NVFP4")
     qlinear_fused = QLinearLayer(layer, select_num=0, reorder_index=reorder_index_cpu, quant_type="SHARQ")
 
-    dense_kernel_ms = bench_cuda(lambda: kernel_dense_prepare(x2d, reorder_index, agemm), args.warmup, args.iters)
-    fused_kernel_ms = bench_cuda(lambda: kernel_fused_prepare(x2d, args.n, agemm), args.warmup, args.iters)
+    dense_kernel_ms = bench_cuda(lambda: kernel_dense_prepare(x2d, reorder_index, backend), args.warmup, args.iters)
+    fused_kernel_ms = bench_cuda(lambda: kernel_fused_prepare(x2d, args.n, backend), args.warmup, args.iters)
 
     dense_linear_ms = bench_cuda(lambda: qlinear_dense((x3d, 1, args.m)), args.warmup, args.iters)
     fused_linear_ms = bench_cuda(lambda: qlinear_fused((x3d, 1, args.m)), args.warmup, args.iters)

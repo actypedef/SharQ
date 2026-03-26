@@ -8,14 +8,11 @@ import torch
 import torch.nn.functional as F
 
 
-def load_agemm():
+def load_sharq_ops():
     repo_root = Path(__file__).resolve().parents[2]
     build_dir = repo_root / "kernels" / "build_cmake_sm120a"
     sys.path.insert(0, str(build_dir))
-    try:
-        import sharq_ops as backend  # type: ignore
-    except ImportError:
-        import agemm as backend  # type: ignore
+    import sharq_ops as backend  # type: ignore
 
     return backend
 
@@ -54,7 +51,7 @@ def main() -> None:
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
 
-    agemm = load_agemm()
+    backend = load_sharq_ops()
 
     x = torch.randn((args.m, args.k), device=device, dtype=torch.bfloat16)
     w = torch.randn((args.n, args.k), device=device, dtype=torch.bfloat16)
@@ -67,20 +64,20 @@ def main() -> None:
     x_scaled = (x / scale_x).to(torch.bfloat16)
     w_scaled = (w / scale_w).to(torch.bfloat16)
 
-    qx_dense, sfx_dense = agemm.reorder_quantize_x(x_scaled, reorder_index, 0)
-    qw16, sfw16 = agemm.reorder_quantize_w(w_scaled, reorder_index, 0)
-    y_dense = agemm.matmul(qx_dense, qw16, sfx_dense, sfw16, float(scale_x * scale_w)).float()
+    qx_dense, sfx_dense = backend.reorder_quantize_x(x_scaled, reorder_index, 0)
+    qw16, sfw16 = backend.reorder_quantize_w(w_scaled, reorder_index, 0)
+    y_dense = backend.matmul(qx_dense, qw16, sfx_dense, sfw16, float(scale_x * scale_w)).float()
 
-    qw32, sfw_sparse32, sfw_dense16 = agemm.quantize_w32_shared(w_scaled)
-    y_dense_shared = agemm.matmul(
+    qw32, sfw_sparse32, sfw_dense16 = backend.quantize_w32_shared(w_scaled)
+    y_dense_shared = backend.matmul(
         qx_dense, qw32, sfx_dense, sfw_dense16, float(scale_x * scale_w)
     ).float()
 
-    a_comp, e, sfa_sparse, q_res, sf_res = agemm.fused_sparse_residual_quantize_x(x_scaled, args.n)
-    y_sparse = agemm.sparse_matmul(
+    a_comp, e, sfa_sparse, q_res, sf_res = backend.fused_sparse_residual_quantize_x(x_scaled, args.n)
+    y_sparse = backend.sparse_matmul(
         a_comp, qw32, e, sfa_sparse, sfw_sparse32, args.m, args.n, args.k, float(scale_x * scale_w)
     ).float()
-    y_res = agemm.matmul(
+    y_res = backend.matmul(
         q_res, qw32, sf_res, sfw_dense16, float(scale_x * scale_w)
     ).float()
     y_fused = y_sparse + y_res
