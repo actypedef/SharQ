@@ -88,6 +88,10 @@ def sharq_gemm_only(
     return y_sparse + y_res
 
 
+def bf16_linear(x: torch.Tensor, weight: torch.Tensor) -> None:
+    return torch.nn.functional.linear(x, weight)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark NVFP4 and SHARQ quantize, GEMM, and end-to-end linear latency.")
     parser.add_argument("--m", type=int, default=256)
@@ -126,6 +130,8 @@ def main() -> None:
 
     nvfp4_quantize_ms = bench_cuda(lambda: nvfp4_quantize_only(x2d, backend), args.warmup, args.iters)
     sharq_quantize_ms = bench_cuda(lambda: sharq_quantize_only(x2d, args.n, backend), args.warmup, args.iters)
+
+    bf16_linear_ms = bench_cuda(lambda: bf16_linear(x2d, w), args.warmup, args.iters)
 
     nvfp4_gemm_ms = bench_cuda(
         lambda: backend.matmul(qx_nvfp4, qweight_nvfp4, sfx_nvfp4, scale_w_nvfp4, alpha_nvfp4),
@@ -174,18 +180,25 @@ def main() -> None:
     print(f"problem: M={args.m}, N={args.n}, K={args.k}, seed={args.seed}")
     print()
     print("Quantize only")
+    print("  BF16                      : N/A")
     print(f"  NVFP4                     : {nvfp4_quantize_ms:.6f} ms")
     print(f"  SHARQ                     : {sharq_quantize_ms:.6f} ms")
     print(f"  SHARQ/NVFP4 ratio         : {sharq_quantize_ms / max(nvfp4_quantize_ms, 1e-12):.6f}")
     print()
     print("GEMM only")
+    print(f"  BF16                      : {bf16_linear_ms:.6f} ms")
     print(f"  NVFP4                     : {nvfp4_gemm_ms:.6f} ms")
     print(f"  SHARQ                     : {sharq_gemm_ms:.6f} ms")
+    print(f"  NVFP4/BF16 ratio          : {nvfp4_gemm_ms / max(bf16_linear_ms, 1e-12):.6f}")
+    print(f"  SHARQ/BF16 ratio          : {sharq_gemm_ms / max(bf16_linear_ms, 1e-12):.6f}")
     print(f"  SHARQ/NVFP4 ratio         : {sharq_gemm_ms / max(nvfp4_gemm_ms, 1e-12):.6f}")
     print()
     print("Whole linear")
+    print(f"  BF16                      : {bf16_linear_ms:.6f} ms")
     print(f"  NVFP4                     : {nvfp4_linear_ms:.6f} ms")
     print(f"  SHARQ                     : {sharq_linear_ms:.6f} ms")
+    print(f"  NVFP4/BF16 ratio          : {nvfp4_linear_ms / max(bf16_linear_ms, 1e-12):.6f}")
+    print(f"  SHARQ/BF16 ratio          : {sharq_linear_ms / max(bf16_linear_ms, 1e-12):.6f}")
     print(f"  SHARQ/NVFP4 ratio         : {sharq_linear_ms / max(nvfp4_linear_ms, 1e-12):.6f}")
 
 

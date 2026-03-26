@@ -189,9 +189,6 @@ class QLinearLayer(nn.Module):
                 )
             else:
                 self.weight_q, self.scale_w, self.weight_scale = quantize_weight_nvfp4(weight_gpu)
-                identity = torch.eye(self.in_features, dtype=torch.bfloat16, device=weight_gpu.device)
-                self.identity_q, self.identity_scale_q, self.identity_scale = quantize_weight_nvfp4(identity)
-                del identity
 
             del weight_gpu
             torch.cuda.empty_cache()
@@ -247,35 +244,15 @@ class QLinearLayer(nn.Module):
                 1.0,
             )
         else:
-            x_sparse = _top2_4(x_orig_reshaped)
-            qx_sparse, scale_x_sparse, scale_sparse = quantize_activation_nvfp4(x_sparse)
+            qx, scale_x, scale = quantize_activation_nvfp4(x_orig_reshaped)
             sharq_ops = _load_sharq_ops()
-
-            x_approx = sharq_ops.matmul(
-                qx_sparse,
-                self.identity_q,
-                scale_x_sparse,
-                self.identity_scale_q,
-                _to_python_float(scale_sparse * self.identity_scale),
-            )
-            residual = x_orig_reshaped.float() - x_approx.float()
-            qx_res, scale_x_res, scale_res = quantize_activation_nvfp4(residual.to(torch.bfloat16))
-
-            y_sparse = sharq_ops.matmul(
-                qx_sparse,
+            y = sharq_ops.matmul(
+                qx,
                 self.weight_q,
-                scale_x_sparse,
+                scale_x,
                 self.scale_w,
-                _to_python_float(scale_sparse * self.weight_scale),
+                _to_python_float(scale * self.weight_scale),
             )
-            y_res = sharq_ops.matmul(
-                qx_res,
-                self.weight_q,
-                scale_x_res,
-                self.scale_w,
-                _to_python_float(scale_res * self.weight_scale),
-            )
-            y = y_sparse + y_res
 
         if self.bias is not None:
             bias = self.bias.float() if self.quant_type == "SHARQ_SIM" else self.bias
