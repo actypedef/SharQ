@@ -135,9 +135,22 @@ The benchmark scripts are grouped under:
 
 - [`benchmarks/correctness`](benchmarks/correctness)
 - [`benchmarks/perf`](benchmarks/perf)
+- [`benchmarks/e2e`](benchmarks/e2e)
 - [`benchmarks/ablation`](benchmarks/ablation)
 
 See [`benchmarks/README.md`](benchmarks/README.md) for a short guide.
+
+End-to-end prefill benchmark example:
+
+```bash
+python benchmarks/e2e/benchmark_prefill_e2e.py \
+  --model /path/to/model \
+  --quant-type SHARQ \
+  --batch-size 1 \
+  --seqlen 2048
+```
+
+The same script also supports `BF16`, `NVFP4`, and `SHARQ_SIM` for side-by-side prefill comparison.
 
 ## Supported Models
 

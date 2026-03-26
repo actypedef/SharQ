@@ -21,6 +21,12 @@ Latency and throughput measurements.
 - `example_sparse_nvfp4.py`
 - `sweep_sparse_nvfp4.py`
 
+## e2e/
+
+End-to-end model benchmarks.
+
+- `benchmark_prefill_e2e.py`
+
 ## ablation/
 
 Error analysis and mask-strategy comparison.
