@@ -381,8 +381,46 @@ torch::Tensor matmul(
       reinterpret_cast<cutlass::bfloat16_t *>(C.data_ptr<at::BFloat16>()),
       reinterpret_cast<cutlass::float_ue4m3_t *>(SFA.data_ptr<uint8_t>()),
       reinterpret_cast<cutlass::float_ue4m3_t *>(SFB.data_ptr<uint8_t>()),
-      scale);
+      scale,
+      0.0f);
   return C;
+}
+
+torch::Tensor matmul_accum(
+    const torch::Tensor &A,
+    const torch::Tensor &B,
+    const torch::Tensor &SFA,
+    const torch::Tensor &SFB,
+    const float scale,
+    const torch::Tensor &C_in,
+    const float beta) {
+  TORCH_CHECK(C_in.is_cuda(), "C_in must be a CUDA tensor");
+  TORCH_CHECK(C_in.is_contiguous(), "C_in must be contiguous");
+  TORCH_CHECK(C_in.scalar_type() == at::ScalarType::BFloat16, "C_in must be torch.bfloat16");
+
+  uint32_t M = static_cast<uint32_t>(A.size(0));
+  uint32_t N = static_cast<uint32_t>(B.size(0));
+  uint32_t K = static_cast<uint32_t>(A.size(1) * 2);
+  TORCH_CHECK(C_in.dim() == 2, "C_in must be shaped [M, N]");
+  TORCH_CHECK(C_in.size(0) == M && C_in.size(1) == N,
+              "C_in shape mismatch: expected [", M, ", ", N, "] got [", C_in.size(0), ", ", C_in.size(1), "]");
+  TORCH_CHECK(C_in.device() == A.device(), "C_in must be on the same device as A");
+
+  auto D = torch::empty({M, N}, torch::dtype(torch::kBFloat16).device(A.device()));
+
+  matmul_host_nvfp4_bf16(
+      reinterpret_cast<cutlass::float_e2m1_t *>(A.data_ptr<uint8_t>()),
+      reinterpret_cast<cutlass::float_e2m1_t *>(B.data_ptr<uint8_t>()),
+      M,
+      N,
+      K,
+      reinterpret_cast<cutlass::bfloat16_t *>(const_cast<at::BFloat16 *>(C_in.data_ptr<at::BFloat16>())),
+      reinterpret_cast<cutlass::bfloat16_t *>(D.data_ptr<at::BFloat16>()),
+      reinterpret_cast<cutlass::float_ue4m3_t *>(SFA.data_ptr<uint8_t>()),
+      reinterpret_cast<cutlass::float_ue4m3_t *>(SFB.data_ptr<uint8_t>()),
+      scale,
+      beta);
+  return D;
 }
 
 torch::Tensor sparse_matmul(
@@ -456,6 +494,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("matmul", &matmul,
         "Dense NVFP4 GEMM returning torch.bfloat16",
         py::arg("A"), py::arg("B"), py::arg("SFA"), py::arg("SFB"), py::arg("scale"));
+  m.def("matmul_accum", &matmul_accum,
+        "Dense NVFP4 GEMM with epilogue accumulation into an existing bf16 tensor",
+        py::arg("A"), py::arg("B"), py::arg("SFA"), py::arg("SFB"), py::arg("scale"), py::arg("C_in"), py::arg("beta") = 1.0f);
 
   m.def("sparse_matmul", &sparse_matmul,
         "Sparse NVFP4 GEMM for precompressed A_comp/E/SFA inputs",

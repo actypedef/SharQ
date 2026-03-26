@@ -96,6 +96,10 @@ add_executable(bench_sparse_nvfp4 ${KERNELS_BENCH_DIR}/bench_sparse_nvfp4.cu
 $<TARGET_OBJECTS:gemm_dense_objs>
 $<TARGET_OBJECTS:gemm_sparse_objs>)
 
+add_executable(bench_sharq_linear ${KERNELS_BENCH_DIR}/bench_sharq_linear.cu
+$<TARGET_OBJECTS:gemm_dense_objs>
+$<TARGET_OBJECTS:gemm_sparse_objs>)
+
 
 add_library(sharq_ops MODULE ${KERNELS_SRC_DIR}/bindings.cpp
   $<TARGET_OBJECTS:gemm_dense_objs>
@@ -105,6 +109,7 @@ target_link_libraries(sharq_ops PRIVATE pybind11::module "${TORCH_LIBRARIES}" "$
 
 target_compile_options(bench_nvfp4 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
 target_compile_options(bench_sparse_nvfp4 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
+target_compile_options(bench_sharq_linear PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
 target_compile_options(gemm_dense_objs PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fPIC>)
 target_compile_options(gemm_sparse_objs PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fPIC>)
 target_compile_options(sharq_ops PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>)
@@ -114,9 +119,11 @@ use_torch_cuda_arch_flags(bench_nvfp4)
 use_torch_cuda_arch_flags(sharq_ops)
 enable_cuda_sm120a(gemm_sparse_objs)
 enable_cuda_sm120a(bench_sparse_nvfp4)
+enable_cuda_sm120a(bench_sharq_linear)
 
 target_compile_definitions(bench_nvfp4 PRIVATE CUTLASS_ARCH_SM120_SUPPORTED)
 target_compile_definitions(bench_sparse_nvfp4 PRIVATE CUTLASS_ARCH_SM120_SUPPORTED)
+target_compile_definitions(bench_sharq_linear PRIVATE CUTLASS_ARCH_SM120_SUPPORTED)
 target_compile_definitions(sharq_ops PRIVATE CUTLASS_ARCH_SM120_SUPPORTED)
 
 set_property(TARGET sharq_ops PROPERTY CXX_STANDARD 17)

@@ -237,8 +237,15 @@ class QLinearLayer(nn.Module):
                 self.in_features,
                 alpha=output_scale,
             )
-            y_res = sharq_ops.matmul(qx_res, self.weight_q, scale_x_res, self.scale_w_dense, output_scale)
-            y = y_sparse + y_res
+            y = sharq_ops.matmul_accum(
+                qx_res,
+                self.weight_q,
+                scale_x_res,
+                self.scale_w_dense,
+                output_scale,
+                y_sparse,
+                1.0,
+            )
         else:
             x_sparse = _top2_4(x_orig_reshaped)
             qx_sparse, scale_x_sparse, scale_sparse = quantize_activation_nvfp4(x_sparse)

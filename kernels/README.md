@@ -43,7 +43,16 @@ Build the standalone CUDA benchmarks if needed:
 ```bash
 cmake --build kernels/build_cmake_sm120a --target bench_nvfp4 -j
 cmake --build kernels/build_cmake_sm120a --target bench_sparse_nvfp4 -j
+cmake --build kernels/build_cmake_sm120a --target bench_sharq_linear -j
 ```
+
+`bench_sharq_linear` is the main CUDA-side performance harness for comparing NVFP4 and SHARQ at three levels:
+
+- quantize only
+- GEMM only
+- whole linear
+
+It runs entirely on the CUDA/CUTLASS side with preallocated buffers, and treats weight quantization as an offline cost.
 
 Higher-level Python benchmark scripts live in:
 

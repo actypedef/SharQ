@@ -53,5 +53,6 @@ void matmul_host_nvfp4_bf16(
         cutlass::bfloat16_t *D,
         const cutlass::float_ue4m3_t *SFA,
         const cutlass::float_ue4m3_t *SFB,
-        const float scale
+        const float scale,
+        const float beta = 0.0f
 );

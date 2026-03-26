@@ -42,7 +42,8 @@ void matmul_host_nvfp4_bf16(
         ElementD *D,
         const ElementA::ScaleFactorType *SFA,
         const ElementB::ScaleFactorType *SFB,
-        float scale
+        float scale,
+        float beta
 )
 {
     using CollectiveEpilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
@@ -115,7 +116,7 @@ void matmul_host_nvfp4_bf16(
             SFB, layout_SFB 
         },
         { // Epilogue arguments
-            {scale, 0},
+            {scale, beta},
             C, stride_C,
             D, stride_D
         }
