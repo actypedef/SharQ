@@ -87,11 +87,12 @@ class QQwen2Attention(nn.Module):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
         hidden_states_2d = hidden_states.reshape(bsz * q_len, -1).contiguous().detach()
-        linear_input = (hidden_states_2d, bsz, q_len)
+        qkv_out_features = max(self.q_proj.out_features, self.k_proj.out_features, self.v_proj.out_features)
+        qkv_prepared = self.q_proj.prepare_input(hidden_states_2d, out_features_hint=qkv_out_features)
 
-        query_states = self.q_proj(linear_input).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key_states = self.k_proj(linear_input).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        value_states = self.v_proj(linear_input).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        query_states = self.q_proj.apply_prepared(qkv_prepared).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        key_states = self.k_proj.apply_prepared(qkv_prepared).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        value_states = self.v_proj.apply_prepared(qkv_prepared).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
@@ -152,8 +153,9 @@ class QQwen2MLP(nn.Module):
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         bsz, q_len, _ = hidden_states.shape
         hidden_states_2d = hidden_states.reshape(bsz * q_len, -1).contiguous().detach()
-        linear_input = (hidden_states_2d, bsz, q_len)
-        mlp_output = self.act_fn(self.gate_proj(linear_input)) * self.up_proj(linear_input)
+        gateup_out_features = max(self.gate_proj.out_features, self.up_proj.out_features)
+        gateup_prepared = self.gate_proj.prepare_input(hidden_states_2d, out_features_hint=gateup_out_features)
+        mlp_output = self.act_fn(self.gate_proj.apply_prepared(gateup_prepared)) * self.up_proj.apply_prepared(gateup_prepared)
         mlp_output_2d = mlp_output.reshape(bsz * q_len, -1).contiguous().detach()
         return self.down_proj((mlp_output_2d, bsz, q_len))
 

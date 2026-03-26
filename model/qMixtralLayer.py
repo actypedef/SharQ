@@ -95,11 +95,12 @@ class QMixtralAttention(nn.Module):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
         hidden_states_2d = hidden_states.reshape(bsz * q_len, -1).contiguous().detach()
-        linear_input = (hidden_states_2d, bsz, q_len)
+        qkv_out_features = max(self.q_proj.out_features, self.k_proj.out_features, self.v_proj.out_features)
+        qkv_prepared = self.q_proj.prepare_input(hidden_states_2d, out_features_hint=qkv_out_features)
 
-        query_states = self.q_proj(linear_input).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key_states = self.k_proj(linear_input).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        value_states = self.v_proj(linear_input).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        query_states = self.q_proj.apply_prepared(qkv_prepared).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        key_states = self.k_proj.apply_prepared(qkv_prepared).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        value_states = self.v_proj.apply_prepared(qkv_prepared).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
@@ -164,8 +165,10 @@ class QMixtralBlockSparseTop2MLP(nn.Module):
     @torch.no_grad()
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         q_len, _ = hidden_states.shape
-        linear_input = (hidden_states.contiguous().detach(), None, q_len)
-        hidden_states = self.act_fn(self.w1(linear_input)) * self.w3(linear_input)
+        hidden_states_2d = hidden_states.contiguous().detach()
+        gateup_out_features = max(self.w1.out_features, self.w3.out_features)
+        gateup_prepared = self.w1.prepare_input(hidden_states_2d, out_features_hint=gateup_out_features)
+        hidden_states = self.act_fn(self.w1.apply_prepared(gateup_prepared)) * self.w3.apply_prepared(gateup_prepared)
         hidden_states_2d = hidden_states.reshape(q_len, -1).contiguous().detach()
         return self.w2((hidden_states_2d, None, q_len))
 
