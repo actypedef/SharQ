@@ -79,7 +79,13 @@ def main():
 
     torch.cuda.reset_max_memory_allocated()
     start_time = time.time()
-    model = quantize_model(model, device=DEV, kv_cache=args.kv_cache, quant_type=args.quant_type)
+    model = quantize_model(
+        model,
+        device=DEV,
+        kv_cache=args.kv_cache,
+        quant_type=args.quant_type,
+        fuse_rmsnorm=False,
+    )
     end_time = time.time()
     peak_memory = torch.cuda.max_memory_allocated()
 

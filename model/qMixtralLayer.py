@@ -12,7 +12,7 @@ from transformers.models.mixtral.modeling_mixtral import (
 )
 
 from qLinearLayer import QLinearLayer
-from quantize import quantize_int_group
+from quantize import get_rmsnorm_weight_eps, quantize_int_group
 
 
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
@@ -55,10 +55,11 @@ class QMixtralRMSNorm(nn.Module):
 
 
 class QMixtralAttention(nn.Module):
-    def __init__(self, original_attn: MixtralAttention, layer_idx: int, kv_cache: bool, quant_type: str):
+    def __init__(self, original_attn: MixtralAttention, layer_idx: int, kv_cache: bool, quant_type: str, fuse_rmsnorm: bool = True):
         super().__init__()
         self.layer_idx = layer_idx
         self.quant_type = quant_type
+        self.fuse_rmsnorm = fuse_rmsnorm
         self.q_kv_cache = kv_cache
         self.config = original_attn.config
         self.hidden_size = original_attn.hidden_size
@@ -92,11 +93,21 @@ class QMixtralAttention(nn.Module):
         use_cache: bool = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        rmsnorm_weight: Optional[torch.Tensor] = None,
+        rmsnorm_eps: Optional[float] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
         hidden_states_2d = hidden_states.reshape(bsz * q_len, -1).contiguous().detach()
         qkv_out_features = max(self.q_proj.out_features, self.k_proj.out_features, self.v_proj.out_features)
-        qkv_prepared = self.q_proj.prepare_input(hidden_states_2d, out_features_hint=qkv_out_features)
+        if self.quant_type == "SHARQ" and self.fuse_rmsnorm and rmsnorm_weight is not None and rmsnorm_eps is not None:
+            qkv_prepared = self.q_proj.prepare_input_rmsnorm(
+                hidden_states_2d,
+                rmsnorm_weight,
+                rmsnorm_eps,
+                out_features_hint=qkv_out_features,
+            )
+        else:
+            qkv_prepared = self.q_proj.prepare_input(hidden_states_2d, out_features_hint=qkv_out_features)
 
         query_states = self.q_proj.apply_prepared(qkv_prepared).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = self.k_proj.apply_prepared(qkv_prepared).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
@@ -229,10 +240,13 @@ class QMixtralDecoderLayer(nn.Module):
         kv_cache: bool = False,
         layer_idx: int = 0,
         quant_type: str = "SHARQ",
+        fuse_rmsnorm: bool = True,
     ):
         super().__init__()
         self.hidden_size = original_layer.hidden_size
-        self.self_attn = QMixtralAttention(original_layer.self_attn, layer_idx, kv_cache, quant_type)
+        self.quant_type = quant_type
+        self.fuse_rmsnorm = fuse_rmsnorm
+        self.self_attn = QMixtralAttention(original_layer.self_attn, layer_idx, kv_cache, quant_type, fuse_rmsnorm=fuse_rmsnorm)
         self.block_sparse_moe = QMixtralSparseMoeBlock(original_layer.block_sparse_moe, quant_type)
         self.input_layernorm = QMixtralRMSNorm(original_layer.input_layernorm)
         self.post_attention_layernorm = QMixtralRMSNorm(original_layer.post_attention_layernorm)
@@ -251,10 +265,16 @@ class QMixtralDecoderLayer(nn.Module):
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
+        if self.quant_type == "SHARQ" and self.fuse_rmsnorm:
+            input_rmsnorm_weight, input_rmsnorm_eps = get_rmsnorm_weight_eps(self.input_layernorm)
+            attn_input = hidden_states
+        else:
+            attn_input = self.input_layernorm(hidden_states)
+            input_rmsnorm_weight = None
+            input_rmsnorm_eps = None
 
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
+            hidden_states=attn_input,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_value=past_key_value,
@@ -262,6 +282,8 @@ class QMixtralDecoderLayer(nn.Module):
             use_cache=use_cache,
             cache_position=cache_position,
             position_embeddings=position_embeddings,
+            rmsnorm_weight=input_rmsnorm_weight,
+            rmsnorm_eps=input_rmsnorm_eps,
         )
         hidden_states = residual + hidden_states
 

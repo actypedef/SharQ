@@ -276,6 +276,73 @@ fused_sparse_residual_quantize_x(const torch::Tensor &X, const int N) {
   return std::make_tuple(A_comp, E, SFA_sparse, Q_res, SF_res);
 }
 
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+fused_rmsnorm_sparse_residual_quantize_x(
+    const torch::Tensor &X,
+    const torch::Tensor &rmsnorm_weight,
+    const float rmsnorm_eps,
+    const int N) {
+  TORCH_CHECK(X.is_cuda(), "X must be a CUDA tensor");
+  TORCH_CHECK(X.is_contiguous(), "X must be contiguous");
+  TORCH_CHECK(X.scalar_type() == at::ScalarType::BFloat16, "X must be torch.bfloat16");
+  TORCH_CHECK(X.dim() == 2, "X must be shaped [M, K]");
+  TORCH_CHECK(rmsnorm_weight.is_cuda(), "rmsnorm_weight must be a CUDA tensor");
+  TORCH_CHECK(rmsnorm_weight.is_contiguous(), "rmsnorm_weight must be contiguous");
+  TORCH_CHECK(rmsnorm_weight.scalar_type() == at::ScalarType::BFloat16, "rmsnorm_weight must be torch.bfloat16");
+  TORCH_CHECK(rmsnorm_weight.dim() == 1, "rmsnorm_weight must be shaped [K]");
+  TORCH_CHECK(rmsnorm_weight.device() == X.device(), "rmsnorm_weight must be on the same device as X");
+
+  const int M = static_cast<int>(X.size(0));
+  const int K = static_cast<int>(X.size(1));
+
+  TORCH_CHECK(rmsnorm_weight.size(0) == K, "rmsnorm_weight size mismatch: expected ", K, ", got ", rmsnorm_weight.size(0));
+  TORCH_CHECK(K % 128 == 0,
+              "fused_rmsnorm_sparse_residual_quantize_x currently requires K to be a multiple of 128, got ",
+              K);
+  TORCH_CHECK((K / 32) <= 1024,
+              "fused_rmsnorm_sparse_residual_quantize_x requires K/32 <= 1024, got ",
+              K / 32);
+
+  auto options = torch::dtype(torch::kUInt8).device(X.device());
+  auto float_options = torch::dtype(torch::kFloat32).device(X.device());
+  auto A_comp = torch::zeros({static_cast<int64_t>(sparse_nvfp4::get_compressed_a_bytes(M, N, K))}, options);
+  auto E = torch::zeros({static_cast<int64_t>(sparse_nvfp4::get_metadata_e_bytes(M, N, K))}, options);
+  auto SFA_sparse = torch::zeros({static_cast<int64_t>(sparse_nvfp4::get_sfa_bytes(M, N, K))}, options);
+  auto Q_res = torch::zeros({static_cast<int64_t>(M), static_cast<int64_t>(K / 2)}, options);
+  auto SF_res = torch::zeros({static_cast<int64_t>(get_sfa_buffer_size_in_bytes(M, K))}, options);
+  auto inv_rms = torch::zeros({static_cast<int64_t>(M)}, float_options);
+  auto row_absmax = torch::zeros({static_cast<int64_t>(M)}, float_options);
+
+  run_fused_rmsnorm_row_stats_bf16(
+      reinterpret_cast<cutlass::bfloat16_t *>(X.data_ptr<at::BFloat16>()),
+      reinterpret_cast<cutlass::bfloat16_t *>(rmsnorm_weight.data_ptr<at::BFloat16>()),
+      rmsnorm_eps,
+      M,
+      K,
+      inv_rms.data_ptr<float>(),
+      row_absmax.data_ptr<float>());
+
+  auto scale = torch::clamp(torch::amax(row_absmax) / (448.0f * 6.0f), 1.0e-9f);
+  float input_scale = scale.item<float>();
+
+  run_fused_rmsnorm_sparse_residual_x_bf16_nvfp4(
+      reinterpret_cast<cutlass::bfloat16_t *>(X.data_ptr<at::BFloat16>()),
+      reinterpret_cast<cutlass::bfloat16_t *>(rmsnorm_weight.data_ptr<at::BFloat16>()),
+      inv_rms.data_ptr<float>(),
+      input_scale,
+      M,
+      N,
+      K,
+      A_comp.data_ptr<uint8_t>(),
+      E.data_ptr<uint8_t>(),
+      nullptr,
+      reinterpret_cast<cutlass::float_ue4m3_t *>(SFA_sparse.data_ptr<uint8_t>()),
+      Q_res.data_ptr<uint8_t>(),
+      reinterpret_cast<cutlass::float_ue4m3_t *>(SF_res.data_ptr<uint8_t>()));
+
+  return std::make_tuple(A_comp, E, SFA_sparse, Q_res, SF_res, scale);
+}
+
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 fused_sparse_residual_quantize_x_debug(const torch::Tensor &X, const int N) {
   TORCH_CHECK(X.is_cuda(), "X must be a CUDA tensor");
@@ -529,6 +596,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("fused_sparse_residual_quantize_x", &fused_sparse_residual_quantize_x,
         "Fused sparse main-path quantization plus dense residual quantization",
         py::arg("X"), py::arg("N"));
+  m.def("fused_rmsnorm_sparse_residual_quantize_x", &fused_rmsnorm_sparse_residual_quantize_x,
+        "Fused RMSNorm plus sparse main-path quantization and dense residual quantization",
+        py::arg("X"), py::arg("rmsnorm_weight"), py::arg("rmsnorm_eps"), py::arg("N"));
   m.def("fused_sparse_residual_quantize_x_debug", &fused_sparse_residual_quantize_x_debug,
         "Debug helper returning raw dense sparse/residual quantized activations before compression",
         py::arg("X"), py::arg("N"));

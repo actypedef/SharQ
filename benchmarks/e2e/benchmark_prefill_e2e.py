@@ -126,7 +126,13 @@ def main() -> None:
     if args.quant_type == "BF16":
         model = model.to(device=device, dtype=torch.bfloat16)
     else:
-        model = quantize_model(model, device=device, kv_cache=args.kv_cache, quant_type=args.quant_type)
+        model = quantize_model(
+            model,
+            device=device,
+            kv_cache=args.kv_cache,
+            quant_type=args.quant_type,
+            fuse_rmsnorm=True,
+        )
         model = model.to(device)
     model.eval()
     model.config.use_cache = True

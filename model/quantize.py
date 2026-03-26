@@ -46,6 +46,23 @@ def global_nvfp4_scale(x: torch.Tensor) -> torch.Tensor:
     return torch.clamp(x.abs().max().float() / (448.0 * 6.0), min=1e-9)
 
 
+def apply_rmsnorm(x: torch.Tensor, weight: torch.Tensor, eps: float) -> torch.Tensor:
+    x_float = x.float()
+    weight_float = weight.float()
+    inv_rms = torch.rsqrt(x_float.pow(2).mean(dim=-1, keepdim=True) + eps)
+    return (x_float * inv_rms * weight_float).to(torch.bfloat16)
+
+
+def get_rmsnorm_weight_eps(norm_module):
+    norm = getattr(norm_module, "original_norm", norm_module)
+    eps = getattr(norm, "variance_epsilon", None)
+    if eps is None:
+        eps = getattr(norm, "eps", None)
+    if eps is None:
+        raise AttributeError(f"Unsupported RMSNorm module: {type(norm)}")
+    return norm.weight, float(eps)
+
+
 def top2_pairs_8_maxabs(x: torch.Tensor) -> torch.Tensor:
     groups = x.view(*x.shape[:-1], x.shape[-1] // 8, 4, 2)
     pair_scores = groups.abs().amax(dim=-1)
@@ -147,6 +164,23 @@ def quantize_activation_sparse_residual_nvfp4(x: torch.Tensor, out_features: int
 
 
 @torch.no_grad()
+def quantize_activation_rmsnorm_sparse_residual_nvfp4(
+    x: torch.Tensor,
+    rmsnorm_weight: torch.Tensor,
+    rmsnorm_eps: float,
+    out_features: int,
+):
+    sharq_ops = load_sharq_ops()
+    a_comp, e, sfa_sparse, q_res, sf_res, scale = sharq_ops.fused_rmsnorm_sparse_residual_quantize_x(
+        x.to(torch.bfloat16),
+        rmsnorm_weight.to(torch.bfloat16),
+        float(rmsnorm_eps),
+        out_features,
+    )
+    return a_comp, e, sfa_sparse, q_res, sf_res, scale
+
+
+@torch.no_grad()
 def quantize_activation_sharq_sim(x: torch.Tensor):
     x_float = x.float()
     scale_x = global_nvfp4_scale(x)
@@ -158,9 +192,12 @@ def quantize_activation_sharq_sim(x: torch.Tensor):
 
 
 __all__ = [
+    "apply_rmsnorm",
+    "get_rmsnorm_weight_eps",
     "global_nvfp4_scale",
     "load_sharq_ops",
     "quantize_activation_nvfp4",
+    "quantize_activation_rmsnorm_sparse_residual_nvfp4",
     "quantize_activation_sharq_sim",
     "quantize_activation_sparse_residual_nvfp4",
     "quantize_int_group",

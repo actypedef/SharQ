@@ -3,8 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from quantize import (
+    apply_rmsnorm,
     load_sharq_ops,
     quantize_activation_nvfp4,
+    quantize_activation_rmsnorm_sparse_residual_nvfp4,
     quantize_activation_sharq_sim,
     quantize_activation_sparse_residual_nvfp4,
     quantize_weight_nvfp4,
@@ -68,6 +70,28 @@ class QLinearLayer(nn.Module):
 
         qx, scale_x, scale = quantize_activation_nvfp4(x_2d)
         return ("NVFP4", qx, scale_x, scale)
+
+    @torch.no_grad()
+    def prepare_input_rmsnorm(
+        self,
+        x_2d: torch.Tensor,
+        rmsnorm_weight: torch.Tensor,
+        rmsnorm_eps: float,
+        out_features_hint: int | None = None,
+    ):
+        if self.quant_type == "SHARQ":
+            x_2d = x_2d.to(torch.bfloat16)
+            sparse_out_features = self.out_features if out_features_hint is None else int(out_features_hint)
+            a_comp, e, sfa_sparse, qx_res, scale_x_res, scale_x = quantize_activation_rmsnorm_sparse_residual_nvfp4(
+                x_2d,
+                rmsnorm_weight,
+                rmsnorm_eps,
+                sparse_out_features,
+            )
+            return ("SHARQ", a_comp, e, sfa_sparse, qx_res, scale_x_res, scale_x)
+
+        x_norm = apply_rmsnorm(x_2d.to(torch.bfloat16), rmsnorm_weight, rmsnorm_eps)
+        return self.prepare_input(x_norm, out_features_hint=out_features_hint)
 
     @torch.no_grad()
     def apply_prepared(self, prepared):

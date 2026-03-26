@@ -5,7 +5,7 @@ from torch import nn
 from transformers.models.llama.modeling_llama import LlamaAttention, LlamaDecoderLayer, LlamaMLP, LlamaRMSNorm
 
 from qLinearLayer import QLinearLayer
-from quantize import quantize_int_group
+from quantize import get_rmsnorm_weight_eps, quantize_int_group
 
 
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
@@ -47,10 +47,11 @@ class QLlamaRMSNorm(nn.Module):
 
 
 class QLlamaAttention(nn.Module):
-    def __init__(self, original_attn: LlamaAttention, layer_idx: int, kv_cache: bool, quant_type: str):
+    def __init__(self, original_attn: LlamaAttention, layer_idx: int, kv_cache: bool, quant_type: str, fuse_rmsnorm: bool = True):
         super().__init__()
         self.layer_idx = layer_idx
         self.quant_type = quant_type
+        self.fuse_rmsnorm = fuse_rmsnorm
         self.q_kv_cache = kv_cache
         self.config = original_attn.config
         self.hidden_size = original_attn.hidden_size
@@ -84,11 +85,21 @@ class QLlamaAttention(nn.Module):
         use_cache: bool = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        rmsnorm_weight: Optional[torch.Tensor] = None,
+        rmsnorm_eps: Optional[float] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
         hidden_states_2d = hidden_states.reshape(bsz * q_len, -1).contiguous().detach()
         qkv_out_features = max(self.q_proj.out_features, self.k_proj.out_features, self.v_proj.out_features)
-        qkv_prepared = self.q_proj.prepare_input(hidden_states_2d, out_features_hint=qkv_out_features)
+        if self.quant_type == "SHARQ" and self.fuse_rmsnorm and rmsnorm_weight is not None and rmsnorm_eps is not None:
+            qkv_prepared = self.q_proj.prepare_input_rmsnorm(
+                hidden_states_2d,
+                rmsnorm_weight,
+                rmsnorm_eps,
+                out_features_hint=qkv_out_features,
+            )
+        else:
+            qkv_prepared = self.q_proj.prepare_input(hidden_states_2d, out_features_hint=qkv_out_features)
 
         query_states = self.q_proj.apply_prepared(qkv_prepared).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = self.k_proj.apply_prepared(qkv_prepared).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
@@ -141,19 +152,34 @@ class QLlamaAttention(nn.Module):
 
 
 class QLlamaMLP(nn.Module):
-    def __init__(self, original_mlp: LlamaMLP, quant_type: str):
+    def __init__(self, original_mlp: LlamaMLP, quant_type: str, fuse_rmsnorm: bool = True):
         super().__init__()
         self.gate_proj = QLinearLayer(original_mlp.gate_proj, quant_type=quant_type)
         self.up_proj = QLinearLayer(original_mlp.up_proj, quant_type=quant_type)
         self.down_proj = QLinearLayer(original_mlp.down_proj, quant_type=quant_type)
         self.act_fn = original_mlp.act_fn
+        self.quant_type = quant_type
+        self.fuse_rmsnorm = fuse_rmsnorm
 
     @torch.no_grad()
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        rmsnorm_weight: Optional[torch.Tensor] = None,
+        rmsnorm_eps: Optional[float] = None,
+    ) -> torch.Tensor:
         bsz, q_len, _ = hidden_states.shape
         hidden_states_2d = hidden_states.reshape(bsz * q_len, -1).contiguous().detach()
         gateup_out_features = max(self.gate_proj.out_features, self.up_proj.out_features)
-        gateup_prepared = self.gate_proj.prepare_input(hidden_states_2d, out_features_hint=gateup_out_features)
+        if self.quant_type == "SHARQ" and self.fuse_rmsnorm and rmsnorm_weight is not None and rmsnorm_eps is not None:
+            gateup_prepared = self.gate_proj.prepare_input_rmsnorm(
+                hidden_states_2d,
+                rmsnorm_weight,
+                rmsnorm_eps,
+                out_features_hint=gateup_out_features,
+            )
+        else:
+            gateup_prepared = self.gate_proj.prepare_input(hidden_states_2d, out_features_hint=gateup_out_features)
         mlp_output = self.act_fn(self.gate_proj.apply_prepared(gateup_prepared)) * self.up_proj.apply_prepared(gateup_prepared)
         mlp_output_2d = mlp_output.reshape(bsz * q_len, -1).contiguous().detach()
         return self.down_proj((mlp_output_2d, bsz, q_len))
@@ -166,11 +192,14 @@ class QLlamaDecoderLayer(nn.Module):
         kv_cache: bool = False,
         layer_idx: int = 0,
         quant_type: str = "SHARQ",
+        fuse_rmsnorm: bool = True,
     ):
         super().__init__()
         self.hidden_size = original_layer.hidden_size
-        self.self_attn = QLlamaAttention(original_layer.self_attn, layer_idx, kv_cache, quant_type)
-        self.mlp = QLlamaMLP(original_layer.mlp, quant_type)
+        self.quant_type = quant_type
+        self.fuse_rmsnorm = fuse_rmsnorm
+        self.self_attn = QLlamaAttention(original_layer.self_attn, layer_idx, kv_cache, quant_type, fuse_rmsnorm=fuse_rmsnorm)
+        self.mlp = QLlamaMLP(original_layer.mlp, quant_type, fuse_rmsnorm=fuse_rmsnorm)
         self.input_layernorm = QLlamaRMSNorm(original_layer.input_layernorm)
         self.post_attention_layernorm = QLlamaRMSNorm(original_layer.post_attention_layernorm)
 
@@ -187,10 +216,16 @@ class QLlamaDecoderLayer(nn.Module):
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states
-        hidden_states = self.input_layernorm(hidden_states)
+        if self.quant_type == "SHARQ" and self.fuse_rmsnorm:
+            input_rmsnorm_weight, input_rmsnorm_eps = get_rmsnorm_weight_eps(self.input_layernorm)
+            attn_input = hidden_states
+        else:
+            attn_input = self.input_layernorm(hidden_states)
+            input_rmsnorm_weight = None
+            input_rmsnorm_eps = None
 
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
+            hidden_states=attn_input,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_value=past_key_value,
@@ -198,12 +233,20 @@ class QLlamaDecoderLayer(nn.Module):
             use_cache=use_cache,
             cache_position=cache_position,
             position_embeddings=position_embeddings,
+            rmsnorm_weight=input_rmsnorm_weight,
+            rmsnorm_eps=input_rmsnorm_eps,
         )
         hidden_states = residual + hidden_states
 
         residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
+        if self.quant_type == "SHARQ" and self.fuse_rmsnorm:
+            post_rmsnorm_weight, post_rmsnorm_eps = get_rmsnorm_weight_eps(self.post_attention_layernorm)
+            mlp_input = hidden_states
+        else:
+            mlp_input = self.post_attention_layernorm(hidden_states)
+            post_rmsnorm_weight = None
+            post_rmsnorm_eps = None
+        hidden_states = self.mlp(mlp_input, rmsnorm_weight=post_rmsnorm_weight, rmsnorm_eps=post_rmsnorm_eps)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)

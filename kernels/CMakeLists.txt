@@ -86,6 +86,7 @@ add_library(gemm_dense_objs OBJECT
 add_library(gemm_sparse_objs OBJECT
   ${KERNELS_SRC_DIR}/sparse_nvfp4.cu
   ${KERNELS_SRC_DIR}/fused_sparse_prepare.cu
+  ${KERNELS_SRC_DIR}/fused_rmsnorm_sparse_prepare.cu
   ${KERNELS_SRC_DIR}/shared_weight_nvfp4.cu)
 
 

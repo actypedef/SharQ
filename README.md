@@ -1,4 +1,4 @@
-﻿# SharQ
+﻿# 🦈SharQ
 
 **🦈SharQ: Bridging Activation Sparsity and FP4 Quantization for LLM Inference**
 
@@ -83,6 +83,13 @@ python model/main.py /path/to/model \
   --dataset wikitext2 \
   --eval_ppl \
   --quant_type SHARQ
+
+# disable RMSNorm fusion for accuracy ablations
+python model/main.py /path/to/model \
+  --dataset wikitext2 \
+  --eval_ppl \
+  --quant_type SHARQ \
+  --disable_rmsnorm_fusion
 ```
 
 Simulation-only reference:
@@ -148,9 +155,19 @@ python benchmarks/e2e/benchmark_prefill_e2e.py \
   --quant-type SHARQ \
   --batch-size 1 \
   --seqlen 2048
+
+# compare against the unfused RMSNorm path
+python benchmarks/e2e/benchmark_prefill_e2e.py \
+  --model /path/to/model \
+  --quant-type SHARQ \
+  --batch-size 1 \
+  --seqlen 2048 \
+  --disable-rmsnorm-fusion
 ```
 
 The same script also supports `BF16`, `NVFP4`, and `SHARQ_SIM` for side-by-side prefill comparison.
+
+Model evaluation keeps the original RMSNorm path for accuracy measurements, while the benchmark and demo paths enable RMSNorm fusion automatically.
 
 ## Supported Models
 
