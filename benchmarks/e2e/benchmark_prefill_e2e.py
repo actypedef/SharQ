@@ -31,7 +31,7 @@ def load_model_and_quantizer(model_name_or_path: str):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="End-to-end prefill benchmark for BF16, NVFP4, and SHARQ models.")
     parser.add_argument("--model", type=str, required=True, help="Local model path.")
-    parser.add_argument("--quant-type", type=str, default="SHARQ", choices=["BF16", "NVFP4", "SHARQ", "SHARQ_SIM"])
+    parser.add_argument("--quant-type", type=str, default="SHARQ", choices=["BF16", "NVFP4", "SHARQ", "SHARQ_SIM", "HIF4_SIM", "SHARQ_HIF4_SIM"])
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--seqlen", type=int, default=2048)

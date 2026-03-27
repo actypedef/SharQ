@@ -5,10 +5,13 @@ import torch.nn.functional as F
 from quantize import (
     apply_rmsnorm,
     load_sharq_ops,
+    quantize_activation_hif4_sim,
     quantize_activation_nvfp4,
     quantize_activation_rmsnorm_sparse_residual_nvfp4,
+    quantize_activation_sharq_hif4_sim,
     quantize_activation_sharq_sim,
     quantize_activation_sparse_residual_nvfp4,
+    quantize_weight_hif4_sim,
     quantize_weight_nvfp4,
     quantize_weight_sharq_sim,
     quantize_weight_shared_nvfp4,
@@ -28,7 +31,7 @@ class QLinearLayer(nn.Module):
     ):
         super().__init__()
 
-        if quant_type not in {"NVFP4", "SHARQ", "SHARQ_SIM"}:
+        if quant_type not in {"NVFP4", "SHARQ", "SHARQ_SIM", "HIF4_SIM", "SHARQ_HIF4_SIM"}:
             raise ValueError(f"Unsupported quant_type: {quant_type}")
 
         self.in_features = original_layer.in_features
@@ -44,6 +47,10 @@ class QLinearLayer(nn.Module):
 
         if self.quant_type == "SHARQ_SIM":
             self.weight_sim_q32, self.weight_scale = quantize_weight_sharq_sim(original_layer.weight)
+            return
+
+        if self.quant_type in {"HIF4_SIM", "SHARQ_HIF4_SIM"}:
+            self.weight_sim_hif4 = quantize_weight_hif4_sim(original_layer.weight)
             return
 
         weight_gpu = original_layer.weight.detach().to(device="cuda", dtype=torch.bfloat16)
@@ -62,6 +69,14 @@ class QLinearLayer(nn.Module):
         if self.quant_type == "SHARQ_SIM":
             x_sparse_q32, x_res_q16, scale_x = quantize_activation_sharq_sim(x_2d)
             return ("SHARQ_SIM", x_sparse_q32, x_res_q16, scale_x)
+
+        if self.quant_type == "SHARQ_HIF4_SIM":
+            x_sparse_q64, x_res_q64 = quantize_activation_sharq_hif4_sim(x_2d)
+            return ("SHARQ_HIF4_SIM", x_sparse_q64, x_res_q64)
+
+        if self.quant_type == "HIF4_SIM":
+            x_q64 = quantize_activation_hif4_sim(x_2d)
+            return ("HIF4_SIM", x_q64)
 
         if self.quant_type == "SHARQ":
             sparse_out_features = self.out_features if out_features_hint is None else int(out_features_hint)
@@ -105,6 +120,14 @@ class QLinearLayer(nn.Module):
             y_sparse = F.linear(x_sparse_q32, self.weight_sim_q32)
             y_res = F.linear(x_res_q16, self.weight_sim_q32)
             y = (y_sparse + y_res) * output_scale
+        elif tag == "SHARQ_HIF4_SIM":
+            _, x_sparse_q64, x_res_q64 = prepared
+            y_sparse = F.linear(x_sparse_q64, self.weight_sim_hif4)
+            y_res = F.linear(x_res_q64, self.weight_sim_hif4)
+            y = y_sparse + y_res
+        elif tag == "HIF4_SIM":
+            _, x_q64 = prepared
+            y = F.linear(x_q64, self.weight_sim_hif4)
         elif tag == "SHARQ":
             _, a_comp, e, sfa_sparse, qx_res, scale_x_res, scale_x = prepared
             output_scale = to_python_float(scale_x * self.weight_scale)
@@ -153,10 +176,10 @@ class QLinearLayer(nn.Module):
             raise ValueError(f"Unsupported prepared input tag: {tag}")
 
         if self.bias is not None:
-            bias = self.bias.float() if self.quant_type == "SHARQ_SIM" else self.bias
+            bias = self.bias.float() if self.quant_type in {"SHARQ_SIM", "HIF4_SIM", "SHARQ_HIF4_SIM"} else self.bias
             y = y + bias
 
-        if self.quant_type == "SHARQ_SIM":
+        if self.quant_type in {"SHARQ_SIM", "HIF4_SIM", "SHARQ_HIF4_SIM"}:
             y = y.to(torch.bfloat16)
 
         return y

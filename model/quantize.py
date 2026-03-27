@@ -4,6 +4,8 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
+from hif4 import quantize_hif4_tensor
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SHARQ_OPS = None
 
@@ -71,6 +73,22 @@ def top2_pairs_8_maxabs(x: torch.Tensor) -> torch.Tensor:
     pair_mask.scatter_(-1, top_idx, True)
     value_mask = pair_mask.unsqueeze(-1).expand_as(groups)
     return (groups * value_mask).reshape_as(x)
+
+def top2_4_scalar(x: torch.Tensor) -> torch.Tensor:
+    original_shape = x.shape
+    padding = (4 - x.shape[-1] % 4) % 4
+    if padding != 0:
+        x = F.pad(x, (0, padding))
+
+    groups = x.view(*x.shape[:-1], x.shape[-1] // 4, 4)
+    top_idx = groups.abs().topk(k=2, dim=-1).indices
+    mask = torch.zeros_like(groups, dtype=torch.bool)
+    mask.scatter_(-1, top_idx, True)
+    out = (groups * mask).reshape_as(x)
+
+    if padding != 0:
+        out = out[..., :-padding]
+    return out.view(original_shape)
 
 
 def quantize_e2m1(tensor: torch.Tensor) -> torch.Tensor:
@@ -148,6 +166,12 @@ def quantize_weight_sharq_sim(weight: torch.Tensor):
 
 
 @torch.no_grad()
+def quantize_weight_hif4_sim(weight: torch.Tensor):
+    weight_tensor = weight.detach().float()
+    return quantize_hif4_tensor(weight_tensor, group_size=64).to(torch.bfloat16)
+
+
+@torch.no_grad()
 def quantize_activation_nvfp4(x: torch.Tensor):
     scale = global_nvfp4_scale(x)
     sharq_ops = load_sharq_ops()
@@ -191,6 +215,20 @@ def quantize_activation_sharq_sim(x: torch.Tensor):
     return x_sparse_q32, x_res_q16, scale_x
 
 
+@torch.no_grad()
+def quantize_activation_hif4_sim(x: torch.Tensor):
+    return quantize_hif4_tensor(x.float(), group_size=64).to(torch.bfloat16)
+
+
+@torch.no_grad()
+def quantize_activation_sharq_hif4_sim(x: torch.Tensor):
+    x_float = x.float()
+    x_sparse = top2_4_scalar(x_float)
+    x_sparse_q64 = quantize_hif4_tensor(x_sparse, group_size=64).to(torch.bfloat16)
+    x_res_q64 = quantize_hif4_tensor(x_float - x_sparse_q64.float(), group_size=64).to(torch.bfloat16)
+    return x_sparse_q64, x_res_q64
+
+
 __all__ = [
     "apply_rmsnorm",
     "get_rmsnorm_weight_eps",
@@ -199,12 +237,16 @@ __all__ = [
     "quantize_activation_nvfp4",
     "quantize_activation_rmsnorm_sparse_residual_nvfp4",
     "quantize_activation_sharq_sim",
+    "quantize_activation_hif4_sim",
+    "quantize_activation_sharq_hif4_sim",
     "quantize_activation_sparse_residual_nvfp4",
     "quantize_int_group",
     "quantize_nvfp4_tensor",
     "quantize_weight_nvfp4",
     "quantize_weight_sharq_sim",
+    "quantize_weight_hif4_sim",
     "quantize_weight_shared_nvfp4",
     "to_python_float",
     "top2_pairs_8_maxabs",
+    "top2_4_scalar",
 ]
