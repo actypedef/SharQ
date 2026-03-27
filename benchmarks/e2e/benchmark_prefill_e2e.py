@@ -131,7 +131,7 @@ def main() -> None:
             device=device,
             kv_cache=args.kv_cache,
             quant_type=args.quant_type,
-            fuse_rmsnorm=True,
+            extra_fusion=True,
         )
         model = model.to(device)
     model.eval()

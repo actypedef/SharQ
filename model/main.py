@@ -84,7 +84,7 @@ def main():
         device=DEV,
         kv_cache=args.kv_cache,
         quant_type=args.quant_type,
-        fuse_rmsnorm=False,
+        extra_fusion=False,
     )
     end_time = time.time()
     peak_memory = torch.cuda.max_memory_allocated()

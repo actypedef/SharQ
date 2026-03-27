@@ -48,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def load_quantized_model(model_path: str, device: torch.device, quant_type: str, kv_cache: bool, fuse_rmsnorm: bool):
+def load_quantized_model(model_path: str, device: torch.device, quant_type: str, kv_cache: bool, extra_fusion: bool):
     tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False, legacy=False)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -62,7 +62,7 @@ def load_quantized_model(model_path: str, device: torch.device, quant_type: str,
         device=device,
         kv_cache=kv_cache,
         quant_type=quant_type,
-        fuse_rmsnorm=fuse_rmsnorm,
+        extra_fusion=extra_fusion,
     )
     model = model.to(device)
     model.eval()
@@ -124,7 +124,7 @@ def main():
         device=device,
         quant_type=args.quant_type,
         kv_cache=args.kv_cache,
-        fuse_rmsnorm=True,
+        extra_fusion=True,
     )
 
     messages = []

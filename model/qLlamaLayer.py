@@ -47,11 +47,11 @@ class QLlamaRMSNorm(nn.Module):
 
 
 class QLlamaAttention(nn.Module):
-    def __init__(self, original_attn: LlamaAttention, layer_idx: int, kv_cache: bool, quant_type: str, fuse_rmsnorm: bool = True):
+    def __init__(self, original_attn: LlamaAttention, layer_idx: int, kv_cache: bool, quant_type: str, extra_fusion: bool = True):
         super().__init__()
         self.layer_idx = layer_idx
         self.quant_type = quant_type
-        self.fuse_rmsnorm = fuse_rmsnorm
+        self.extra_fusion = extra_fusion
         self.q_kv_cache = kv_cache
         self.config = original_attn.config
         self.hidden_size = original_attn.hidden_size
@@ -68,10 +68,10 @@ class QLlamaAttention(nn.Module):
                 f"hidden_size must be divisible by num_heads (got hidden_size={self.hidden_size}, num_heads={self.num_heads})"
             )
 
-        self.q_proj = QLinearLayer(original_attn.q_proj, quant_type=quant_type)
-        self.k_proj = QLinearLayer(original_attn.k_proj, quant_type=quant_type)
-        self.v_proj = QLinearLayer(original_attn.v_proj, quant_type=quant_type)
-        self.o_proj = QLinearLayer(original_attn.o_proj, quant_type=quant_type)
+        self.q_proj = QLinearLayer(original_attn.q_proj, quant_type=quant_type, extra_fusion=extra_fusion)
+        self.k_proj = QLinearLayer(original_attn.k_proj, quant_type=quant_type, extra_fusion=extra_fusion)
+        self.v_proj = QLinearLayer(original_attn.v_proj, quant_type=quant_type, extra_fusion=extra_fusion)
+        self.o_proj = QLinearLayer(original_attn.o_proj, quant_type=quant_type, extra_fusion=extra_fusion)
         self.rotary_emb = original_attn.rotary_emb
 
     @torch.no_grad()
@@ -91,7 +91,7 @@ class QLlamaAttention(nn.Module):
         bsz, q_len, _ = hidden_states.size()
         hidden_states_2d = hidden_states.reshape(bsz * q_len, -1).contiguous().detach()
         qkv_out_features = max(self.q_proj.out_features, self.k_proj.out_features, self.v_proj.out_features)
-        if self.quant_type == "SHARQ" and self.fuse_rmsnorm and rmsnorm_weight is not None and rmsnorm_eps is not None:
+        if self.quant_type == "SHARQ" and self.extra_fusion and rmsnorm_weight is not None and rmsnorm_eps is not None:
             qkv_prepared = self.q_proj.prepare_input_rmsnorm(
                 hidden_states_2d,
                 rmsnorm_weight,
@@ -152,14 +152,14 @@ class QLlamaAttention(nn.Module):
 
 
 class QLlamaMLP(nn.Module):
-    def __init__(self, original_mlp: LlamaMLP, quant_type: str, fuse_rmsnorm: bool = True):
+    def __init__(self, original_mlp: LlamaMLP, quant_type: str, extra_fusion: bool = True):
         super().__init__()
-        self.gate_proj = QLinearLayer(original_mlp.gate_proj, quant_type=quant_type)
-        self.up_proj = QLinearLayer(original_mlp.up_proj, quant_type=quant_type)
-        self.down_proj = QLinearLayer(original_mlp.down_proj, quant_type=quant_type)
+        self.gate_proj = QLinearLayer(original_mlp.gate_proj, quant_type=quant_type, extra_fusion=extra_fusion)
+        self.up_proj = QLinearLayer(original_mlp.up_proj, quant_type=quant_type, extra_fusion=extra_fusion)
+        self.down_proj = QLinearLayer(original_mlp.down_proj, quant_type=quant_type, extra_fusion=extra_fusion)
         self.act_fn = original_mlp.act_fn
         self.quant_type = quant_type
-        self.fuse_rmsnorm = fuse_rmsnorm
+        self.extra_fusion = extra_fusion
 
     @torch.no_grad()
     def forward(
@@ -171,7 +171,7 @@ class QLlamaMLP(nn.Module):
         bsz, q_len, _ = hidden_states.shape
         hidden_states_2d = hidden_states.reshape(bsz * q_len, -1).contiguous().detach()
         gateup_out_features = max(self.gate_proj.out_features, self.up_proj.out_features)
-        if self.quant_type == "SHARQ" and self.fuse_rmsnorm and rmsnorm_weight is not None and rmsnorm_eps is not None:
+        if self.quant_type == "SHARQ" and self.extra_fusion and rmsnorm_weight is not None and rmsnorm_eps is not None:
             gateup_prepared = self.gate_proj.prepare_input_rmsnorm(
                 hidden_states_2d,
                 rmsnorm_weight,
@@ -192,14 +192,14 @@ class QLlamaDecoderLayer(nn.Module):
         kv_cache: bool = False,
         layer_idx: int = 0,
         quant_type: str = "SHARQ",
-        fuse_rmsnorm: bool = True,
+        extra_fusion: bool = True,
     ):
         super().__init__()
         self.hidden_size = original_layer.hidden_size
         self.quant_type = quant_type
-        self.fuse_rmsnorm = fuse_rmsnorm
-        self.self_attn = QLlamaAttention(original_layer.self_attn, layer_idx, kv_cache, quant_type, fuse_rmsnorm=fuse_rmsnorm)
-        self.mlp = QLlamaMLP(original_layer.mlp, quant_type, fuse_rmsnorm=fuse_rmsnorm)
+        self.extra_fusion = extra_fusion
+        self.self_attn = QLlamaAttention(original_layer.self_attn, layer_idx, kv_cache, quant_type, extra_fusion=extra_fusion)
+        self.mlp = QLlamaMLP(original_layer.mlp, quant_type, extra_fusion=extra_fusion)
         self.input_layernorm = QLlamaRMSNorm(original_layer.input_layernorm)
         self.post_attention_layernorm = QLlamaRMSNorm(original_layer.post_attention_layernorm)
 
@@ -216,7 +216,7 @@ class QLlamaDecoderLayer(nn.Module):
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states
-        if self.quant_type == "SHARQ" and self.fuse_rmsnorm:
+        if self.quant_type == "SHARQ" and self.extra_fusion:
             input_rmsnorm_weight, input_rmsnorm_eps = get_rmsnorm_weight_eps(self.input_layernorm)
             attn_input = hidden_states
         else:
@@ -239,7 +239,7 @@ class QLlamaDecoderLayer(nn.Module):
         hidden_states = residual + hidden_states
 
         residual = hidden_states
-        if self.quant_type == "SHARQ" and self.fuse_rmsnorm:
+        if self.quant_type == "SHARQ" and self.extra_fusion:
             post_rmsnorm_weight, post_rmsnorm_eps = get_rmsnorm_weight_eps(self.post_attention_layernorm)
             mlp_input = hidden_states
         else:

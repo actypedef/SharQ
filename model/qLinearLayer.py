@@ -24,6 +24,7 @@ class QLinearLayer(nn.Module):
         reorder_index=None,
         out_reorder_index=None,
         quant_type: str = "NVFP4",
+        extra_fusion: bool = True,
     ):
         super().__init__()
 
@@ -34,6 +35,7 @@ class QLinearLayer(nn.Module):
         self.out_features = original_layer.out_features
         self.quant_type = quant_type
         self.enable_quant = True
+        self.extra_fusion = extra_fusion
 
         if original_layer.bias is not None:
             self.register_buffer("bias", original_layer.bias.detach().clone())
@@ -79,7 +81,7 @@ class QLinearLayer(nn.Module):
         rmsnorm_eps: float,
         out_features_hint: int | None = None,
     ):
-        if self.quant_type == "SHARQ":
+        if self.quant_type == "SHARQ" and self.extra_fusion:
             x_2d = x_2d.to(torch.bfloat16)
             sparse_out_features = self.out_features if out_features_hint is None else int(out_features_hint)
             a_comp, e, sfa_sparse, qx_res, scale_x_res, scale_x = quantize_activation_rmsnorm_sparse_residual_nvfp4(
@@ -118,15 +120,25 @@ class QLinearLayer(nn.Module):
                 self.in_features,
                 alpha=output_scale,
             )
-            y = sharq_ops.matmul_accum(
-                qx_res,
-                self.weight_q,
-                scale_x_res,
-                self.scale_w_dense,
-                output_scale,
-                y_sparse,
-                1.0,
-            )
+            if self.extra_fusion:
+                y = sharq_ops.matmul_accum(
+                    qx_res,
+                    self.weight_q,
+                    scale_x_res,
+                    self.scale_w_dense,
+                    output_scale,
+                    y_sparse,
+                    1.0,
+                )
+            else:
+                y_res = sharq_ops.matmul(
+                    qx_res,
+                    self.weight_q,
+                    scale_x_res,
+                    self.scale_w_dense,
+                    output_scale,
+                )
+                y = y_sparse + y_res
         elif tag == "NVFP4":
             _, qx, scale_x, scale = prepared
             sharq_ops = load_sharq_ops()
@@ -176,6 +188,7 @@ class QLinearLayerFused(QLinearLayer):
         reorder_index=None,
         out_reorder_index=None,
         quant_type: str = "SHARQ",
+        extra_fusion: bool = True,
     ):
         super().__init__(
             original_layer=original_layer,
@@ -183,4 +196,5 @@ class QLinearLayerFused(QLinearLayer):
             reorder_index=reorder_index,
             out_reorder_index=out_reorder_index,
             quant_type=quant_type,
+            extra_fusion=extra_fusion,
         )

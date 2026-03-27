@@ -1,8 +1,8 @@
-﻿# 🦈SharQ
+﻿# SharQ🦈: Bridging Activation Sparsity and FP4 Quantization
 
-**🦈SharQ: Bridging Activation Sparsity and FP4 Quantization for LLM Inference**
+**Code for the paper "SharQ: Bridging Activation Sparsity and FP4 Quantization for LLM Inference"**
 
-SharQ is a Blackwell-oriented LLM quantization repo built around a simple idea: use a sparse FP4 main path to capture important activations, then use a dense FP4 residual path to recover the loss from sparsification and quantization.
+SharQ is a Blackwell-oriented LLM quantization repo built around this idea: use a sparse FP4 main path to capture important activations, then use a dense FP4 residual path to recover the loss from sparsification and quantization.
 
 The repo currently provides three practical modes:
 
@@ -167,7 +167,7 @@ python benchmarks/e2e/benchmark_prefill_e2e.py \
 
 The same script also supports `BF16`, `NVFP4`, and `SHARQ_SIM` for side-by-side prefill comparison.
 
-Model evaluation keeps the original RMSNorm path for accuracy measurements, while the benchmark and demo paths enable RMSNorm fusion automatically.
+Model evaluation keeps extra fusion disabled for accuracy measurements, while the benchmark and demo paths enable both RMSNorm fusion and epilogue fusion automatically.
 
 ## Supported Models
 

@@ -9,7 +9,7 @@ from qMixtralLayer import QMixtralDecoderLayer
 from qQwenLayer import QQwen2DecoderLayer
 
 
-def _quantize_decoder_layers(model, wrapped_cls, source_cls, device, kv_cache: bool, quant_type: str, fuse_rmsnorm: bool = True):
+def _quantize_decoder_layers(model, wrapped_cls, source_cls, device, kv_cache: bool, quant_type: str, extra_fusion: bool = True):
     model.config.use_cache = False
     layers = model.model.layers
 
@@ -23,7 +23,7 @@ def _quantize_decoder_layers(model, wrapped_cls, source_cls, device, kv_cache: b
                 kv_cache=kv_cache,
                 layer_idx=layer_idx,
                 quant_type=quant_type,
-                fuse_rmsnorm=fuse_rmsnorm,
+                extra_fusion=extra_fusion,
             )
         else:
             raise TypeError(f"Unsupported layer type at index {layer_idx}: {type(layers[layer_idx])}")
@@ -36,7 +36,7 @@ def _quantize_decoder_layers(model, wrapped_cls, source_cls, device, kv_cache: b
     return model
 
 
-def quantize_model_llama(model, device, kv_cache: bool = False, quant_type: str = "SHARQ", fuse_rmsnorm: bool = True):
+def quantize_model_llama(model, device, kv_cache: bool = False, quant_type: str = "SHARQ", extra_fusion: bool = True):
     return _quantize_decoder_layers(
         model=model,
         wrapped_cls=QLlamaDecoderLayer,
@@ -44,11 +44,11 @@ def quantize_model_llama(model, device, kv_cache: bool = False, quant_type: str 
         device=device,
         kv_cache=kv_cache,
         quant_type=quant_type,
-        fuse_rmsnorm=fuse_rmsnorm,
+        extra_fusion=extra_fusion,
     )
 
 
-def quantize_model_qwen(model, device, kv_cache: bool = False, quant_type: str = "SHARQ", fuse_rmsnorm: bool = True):
+def quantize_model_qwen(model, device, kv_cache: bool = False, quant_type: str = "SHARQ", extra_fusion: bool = True):
     return _quantize_decoder_layers(
         model=model,
         wrapped_cls=QQwen2DecoderLayer,
@@ -56,11 +56,11 @@ def quantize_model_qwen(model, device, kv_cache: bool = False, quant_type: str =
         device=device,
         kv_cache=kv_cache,
         quant_type=quant_type,
-        fuse_rmsnorm=fuse_rmsnorm,
+        extra_fusion=extra_fusion,
     )
 
 
-def quantize_model_mixtral(model, device, kv_cache: bool = False, quant_type: str = "SHARQ", fuse_rmsnorm: bool = True):
+def quantize_model_mixtral(model, device, kv_cache: bool = False, quant_type: str = "SHARQ", extra_fusion: bool = True):
     return _quantize_decoder_layers(
         model=model,
         wrapped_cls=QMixtralDecoderLayer,
@@ -68,5 +68,5 @@ def quantize_model_mixtral(model, device, kv_cache: bool = False, quant_type: st
         device=device,
         kv_cache=kv_cache,
         quant_type=quant_type,
-        fuse_rmsnorm=fuse_rmsnorm,
+        extra_fusion=extra_fusion,
     )
