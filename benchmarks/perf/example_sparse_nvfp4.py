@@ -46,7 +46,7 @@ def main():
     torch.manual_seed(0)
     torch.cuda.manual_seed_all(0)
 
-    m, n, k = 128, 128, 4096
+    m, n, k = 4096, 4096, 4096
     x = make_structured_sparse_input(m, k, device)
     w = torch.randn((n, k), device=device, dtype=torch.bfloat16)
     reorder_index = torch.arange(k, device=device, dtype=torch.int16)
