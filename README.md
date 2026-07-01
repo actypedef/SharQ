@@ -1,6 +1,11 @@
-﻿# SharQ🦈: Bridging Activation Sparsity and FP4 Quantization
+﻿# SharQ🦈: Bridging Activation Sparsity and FP4 Quantization for LLM Inference
 
-**Code for the paper "SharQ: Bridging Activation Sparsity and FP4 Quantization for LLM Inference"**
+<h5 align="center">
+
+[![arXiv](https://img.shields.io/badge/SharQ-2606.26587-b31b1b.svg?logo=arXiv)](https://arxiv.org/abs/2606.26587)
+<br>
+
+</h5>
 
 SharQ is a Blackwell-oriented LLM quantization repo built around this idea: use a sparse FP4 main path to capture important activations, then use a dense FP4 residual path to recover the loss from sparsification and quantization.
 
