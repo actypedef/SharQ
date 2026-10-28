@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sharq-vllm-plugin"
+version = "0.1.0"
+description = "SharQ (sparse + residual NVFP4) quantization method for vLLM"
+requires-python = ">=3.10"
+
+[project.entry-points."vllm.general_plugins"]
+sharq = "sharq_vllm_plugin:register"
+
+[tool.setuptools]
+packages = ["sharq_vllm_plugin"]

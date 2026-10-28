@@ -138,6 +138,13 @@ apply_sharq_cuda_arch(bench_sparse_nvfp4)
 apply_sharq_cuda_arch(bench_sharq_linear)
 apply_sharq_cuda_arch(sharq_ops)
 
+# vLLM-oriented ops: stream-aware, CUDA-graph safe fused SharQ linear.
+add_library(sharq_ops_vllm MODULE ${KERNELS_SRC_DIR}/vllm_ops.cu)
+target_link_libraries(sharq_ops_vllm PRIVATE pybind11::module "${TORCH_LIBRARIES}" "${TORCH_PYTHON_LIBRARY}" CUDA::cudart)
+target_compile_options(sharq_ops_vllm PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr -Xcompiler=-fPIC>)
+apply_sharq_cuda_arch(sharq_ops_vllm)
+set_target_properties(sharq_ops_vllm PROPERTIES PREFIX "")
+
 set_property(TARGET sharq_ops PROPERTY CXX_STANDARD 17)
 set_target_properties(sharq_ops PROPERTIES PREFIX "")
 add_definitions(-DTORCH_EXTENSION_NAME=sharq_ops)
