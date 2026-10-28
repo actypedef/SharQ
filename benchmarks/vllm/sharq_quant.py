@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -77,18 +78,12 @@ def quantize_layer_weights(weight: torch.Tensor):
     return results
 
 
-def quantize_model(model_path: str, save_path: str):
-    print(f'Loading model from {model_path}...')
-    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        config=config,
-        torch_dtype='auto',
-        device_map='cpu',
-        trust_remote_code=True,
-    )
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+def save_sharq_checkpoint(model, config, tokenizer, save_path: str, src_dir: str | None = None):
+    """Quantize the in-memory model's linear layers and write a vLLM-ready SharQ checkpoint.
 
+    Reused by quantize_gptq.py so that GPTQ-optimised weights go through exactly the same
+    packing / merging / config-writing path as the plain RTN checkpoints.
+    """
     new_state_dict = {}
     original_state_dict = model.state_dict()
 
@@ -146,6 +141,11 @@ def quantize_model(model_path: str, save_path: str):
     for key, value in original_state_dict.items():
         new_state_dict[key] = value
 
+    # safetensors cannot store two names that share storage (tied embeddings), and
+    # transformers re-ties them on load when tie_word_embeddings is set.
+    if getattr(config, 'tie_word_embeddings', False):
+        new_state_dict.pop('lm_head.weight', None)
+
     os.makedirs(save_path, exist_ok=True)
     print(f'Saving quantized model to {save_path}...')
     save_file(new_state_dict, os.path.join(save_path, 'model.safetensors'))
@@ -155,7 +155,23 @@ def quantize_model(model_path: str, save_path: str):
     }
     config.save_pretrained(save_path)
     tokenizer.save_pretrained(save_path)
+    if src_dir is not None and (Path(src_dir) / 'generation_config.json').exists():
+        shutil.copy(Path(src_dir) / 'generation_config.json', Path(save_path) / 'generation_config.json')
     print('Done! Model is ready for vLLM (with merged QKV/GateUp).')
+
+
+def quantize_model(model_path: str, save_path: str):
+    print(f'Loading model from {model_path}...')
+    config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        config=config,
+        torch_dtype='auto',
+        device_map='cpu',
+        trust_remote_code=True,
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    save_sharq_checkpoint(model, config, tokenizer, save_path, src_dir=model_path)
 
 
 if __name__ == '__main__':

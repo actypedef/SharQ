@@ -196,7 +196,7 @@ M=8192 时，稀疏 GEMM 的耗时只有稠密 GEMM 的 0.65～0.69 倍（qkv 0.
 
 ### 5.2 用 nsys 分析真实引擎
 
-方法：一个运行在 vLLM 引擎进程内的 profiling 脚本（`profile_decode.py`，整理时已由 `profile_phases.py` 取代）跑 batch=4、输入 256 / 输出 128；用 `nsys --cuda-graph-trace=node` 把 graph 内的 kernel 逐个记录下来，再按 kernel + grid 聚合（同功能现由 `analyze_phases.py` 按功能类别提供）。
+方法：一个运行在 vLLM 引擎进程内的 profiling 脚本（`profile_decode.py`，整理时已由 `profile_phases.py` 取代）跑 batch=4、输入 256 / 输出 128；用 `nsys --cuda-graph-trace=node` 把 graph 内的 kernel 逐个记录下来，再按 kernel + grid 聚合（同功能现由 `summarize.py kern` 按功能类别提供）。
 
 - **GPU kernel 总时间**：SharQ v2 为 988.7 ms，NVFP4 为 720.9 ms，比值 1.37x，与端到端结果吻合。
 - **GEMM 逐个对比**（层与 kernel 的对应关系由 grid 推断）：
@@ -363,7 +363,7 @@ KV cache 40 GiB（327,680 tokens），`max_num_seqs=512`，`max_num_batched_toke
 
 ### 7.4 profiler 归因：时间花在哪
 
-对每个方法分别抓了两段 nsys（`profile_phases.py`，`--cuda-graph-trace=node`），再用 `analyze_phases.py` 按功能把 kernel 归类。下表是**每次迭代 / 每步的 GPU 内核时间（ms）**，不是占比，这样能直接看出差值来自哪里。
+对每个方法分别抓了两段 nsys（`profile_phases.py`，`--cuda-graph-trace=node`），再用 `summarize.py phases`（内置分类器）按功能把 kernel 归类。下表是**每次迭代 / 每步的 GPU 内核时间（ms）**，不是占比，这样能直接看出差值来自哪里。
 
 **prefill（1 条请求 × 8192 token，3 次迭代取平均）**
 
@@ -538,12 +538,13 @@ decode（每步 ms）：
 | `kernels/CMakeLists.txt` | 新增 `sharq_ops_vllm` 编译目标 |
 | `benchmarks/vllm/plugin/` （新增） | vLLM 插件，通过 `vllm.general_plugins` 注册 `sharq` 量化方法，自定义算子名为 `vllm::sharq_linear` |
 | `benchmarks/vllm/test_sharq_vllm_ops.py` | 正确性测试：逐位一致性、压力分布、全部执行方式、CUDA Graph |
-| `bench_linear_shapes.py` | 逐层微基准（注意：单层 L2-hot，小 M 结论偏乐观，第 3 节） |
+| ~~`bench_linear_shapes.py`~~ | 逐层微基准（单层 L2-hot，小 M 结论偏乐观，第 3 节）；已被 `bench_decode_fair.py` + `bench_full_stacked.py` 取代，脚本已删除 |
 | `bench_decode_fair.py` | 与 vLLM 跑法一致的解码步对照（推荐使用这个） |
-| `bench_e2e.py`、`run_all.sh`、`summarize_results.py` | 端到端测速与结果汇总 |
-| `bench_phases.py`、`profile_phases.py`、`analyze_phases.py`、`run_phases.sh`、`summarize_phases.py` | prefill / decode 分阶段测速、分阶段 nsys 采集、按功能类别归因 kernel 耗时 |
+| `bench_e2e.py`、`run_all.sh`、`summarize.py e2e` | 端到端测速与结果汇总 |
+| `bench_phases.py`、`profile_phases.py`、`run_phases.sh`、`summarize.py phases` | prefill / decode 分阶段测速、分阶段 nsys 采集、按功能类别归因 kernel 耗时 |
 | `bench_full_stacked.py` | 跨 M 对比执行策略：全 stacked / 全两 GEMM / 当前自动策略（含 stacked 内部各步拆解） |
-| `make_baselines.py`、`smoke_generate.py`、`smoke_baselines.sh`、`ppl_vllm.py` | baseline 权重生成、生成冒烟测试、PPL 计算 |
+| `make_baselines.py`、`smoke_generate.py`（`--baselines`）、`ppl_vllm.py` | baseline 权重生成、生成冒烟测试、PPL 计算 |
+| `quantize_gptq.py`、`analysis_ppl_decomp.py` | 精度方向的后续工作：g32 网格上的 GPTQ 权重（PPL 6.7481 → 6.6134，运行时零开销）与"激活侧 / 权重侧"误差归因，见 vLLM README 3.4 节 |
 
 构建目录：
 - `kernels/build_cmake_sm120a`：`sharq` 环境，torch 2.9.1。
@@ -583,14 +584,14 @@ CUDA_VISIBLE_DEVICES=0 EXTRA_ARGS="--kv-cache-gib 40 --gpu-mem-util 0.9 --max-nu
 
 # prefill / decode 分阶段：测速 + 三组 nsys profiling（prefill / decode bs=4 / bs=64），一个方法一张卡
 CUDA_VISIBLE_DEVICES=0 bash run_phases.sh ph1 SHARQ
-python3 summarize_phases.py        # 生成 7.3 / 7.4 的表（含 kernel 分类归因）
+python3 summarize.py phases        # 生成 7.3 / 7.4 的表（含 kernel 分类归因）
 
 # PPL（需要预先分词好的 /dockerdata/sharq_work/results/ppl/wikitext2_test_llama3_ids.json）
 CUDA_VISIBLE_DEVICES=0 python ppl_vllm.py --label SHARQ --model /dockerdata/sharq_work/quantized/sharq/Llama-3.1-8B \
   --tokenizer /dockerdata/sharq_work/models/Llama-3.1-8B
 
 # 汇总表
-python3 summarize_results.py
+python3 summarize.py e2e
 ```
 
 ### 原始数据位置（`/dockerdata/sharq_work/`）
